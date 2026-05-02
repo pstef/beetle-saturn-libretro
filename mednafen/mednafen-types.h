@@ -107,9 +107,14 @@ typedef struct
  };
 } Uuint32;
 
+#if defined(__GNUC__) && !defined(_WIN32)
+#define MDFN_HIDE __attribute__((visibility("hidden")))
+#else
+#define MDFN_HIDE
+#endif
+
 #define MDFN_HOT
 #define MDFN_COLD
-#define MDFN_HIDE
 #define NO_CLONE
 
 #ifdef __cplusplus
