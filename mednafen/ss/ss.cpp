@@ -1031,6 +1031,9 @@ MDFN_COLD void CloseGame(void)
 {
  //
  //
+#ifdef SH7095_OP_PAIR_PROFILE
+ SS_DumpOpPairProfile();
+#endif
 
  SaveBackupRAM();
  SaveCartNV();
