@@ -3124,26 +3124,54 @@ struct WQ_Entry
 };
 
 static std::array<WQ_Entry, 0x80000> WQ;
-static size_t WQ_ReadPos, WQ_WritePos;
-static std::atomic_uint_least32_t WQ_InCount;
-static std::atomic_int_least32_t DrawCounter;
+// SPSC queue state. Each atomic is written by exactly one thread (release-store)
+// and read by the other (acquire-load); live queue depth is recovered by
+// subtraction, avoiding the cross-thread RMW that bounced the cache line.
+// Producer-side and consumer-side state live on separate cache lines so the
+// consumer's pop-side writes don't thrash the producer's reads of its own
+// counters. WQ_PopCached lets WWQ skip the per-call atomic load on the
+// queue-full check — DrawFinishCount is read directly because the wakeup
+// heuristic needs an up-to-date queue depth to detect drain-to-empty.
+alignas(64) static std::atomic_uint_least32_t WQ_PushCount;     // producer-written
+alignas(64) static std::atomic_uint_least32_t WQ_PopCount;      // consumer-written
+alignas(64) static std::atomic_uint_least32_t DrawFinishCount;  // consumer-written
+struct alignas(64) ProducerState
+{
+ size_t WritePos;
+ uint32 PushLocal;        // total WQ pushes
+ uint32 DrawPushLocal;    // total VDP2REND_DrawLine pushes
+ uint32 WQ_PopCached;     // last-seen WQ_PopCount; refreshed only when the queue
+                          // appears full (huge queue, so basically never)
+};
+struct alignas(64) ConsumerState
+{
+ size_t ReadPos;
+ uint32 PopLocal;         // total WQ pops
+ uint32 DrawFinishLocal;  // total DrawLine completions
+};
+static ProducerState Prod;
+static ConsumerState Cons;
 static bool DoBusyWait;
 ssem_t* WakeupSem;
 static bool DoWakeupIfNecessary;
 
 static INLINE void WWQ(uint16 command, uint32 arg32 = 0, uint16 arg16 = 0)
 {
- while(MDFN_UNLIKELY(WQ_InCount.load(std::memory_order_acquire) == WQ.size()))
-  retro_sleep(1);
+ while(MDFN_UNLIKELY(Prod.PushLocal - Prod.WQ_PopCached == WQ.size()))
+ {
+  Prod.WQ_PopCached = WQ_PopCount.load(std::memory_order_acquire);
+  if(Prod.PushLocal - Prod.WQ_PopCached == WQ.size())
+   retro_sleep(1);
+ }
 
- WQ_Entry* wqe = &WQ[WQ_WritePos];
+ WQ_Entry* wqe = &WQ[Prod.WritePos];
 
  wqe->Command = command;
  wqe->Arg16 = arg16;
  wqe->Arg32 = arg32;
 
- WQ_WritePos = (WQ_WritePos + 1) % WQ.size();
- WQ_InCount.fetch_add(1, std::memory_order_release);
+ Prod.WritePos = (Prod.WritePos + 1) % WQ.size();
+ WQ_PushCount.store(++Prod.PushLocal, std::memory_order_release);
 }
 
 static void/*int*/ RThreadEntry(void* data)
@@ -3152,7 +3180,7 @@ static void/*int*/ RThreadEntry(void* data)
 
  while(MDFN_LIKELY(Running))
  {
-  while(MDFN_UNLIKELY(WQ_InCount.load(std::memory_order_acquire) == 0))
+  while(MDFN_UNLIKELY(WQ_PushCount.load(std::memory_order_acquire) == Cons.PopLocal))
   {
    if(!DoBusyWait)
     ssem_wait(WakeupSem);
@@ -3177,7 +3205,7 @@ static void/*int*/ RThreadEntry(void* data)
   //
   //
   //
-  WQ_Entry* wqe = &WQ[WQ_ReadPos];
+  WQ_Entry* wqe = &WQ[Cons.ReadPos];
 
   switch(wqe->Command)
   {
@@ -3193,7 +3221,7 @@ static void/*int*/ RThreadEntry(void* data)
 	//for(unsigned i = 0; i < 2; i++)
 	DrawLine((uint16)wqe->Arg32, wqe->Arg32 >> 16, wqe->Arg16);
 	//
-	DrawCounter.fetch_sub(1, std::memory_order_release);
+	DrawFinishCount.store(++Cons.DrawFinishLocal, std::memory_order_release);
 	break;
 
    case COMMAND_RESET:
@@ -3215,8 +3243,8 @@ static void/*int*/ RThreadEntry(void* data)
   //
   //
   //
-  WQ_ReadPos = (WQ_ReadPos + 1) % WQ.size();
-  WQ_InCount.fetch_sub(1, std::memory_order_release);
+  Cons.ReadPos = (Cons.ReadPos + 1) % WQ.size();
+  WQ_PopCount.store(++Cons.PopLocal, std::memory_order_release);
  }
 
  // return 0; // Libretro fix
@@ -3236,10 +3264,11 @@ void VDP2REND_Init(const bool IsPAL, const uint64 affinity)
  UserLayerEnableMask = ~0U;
  Clock28M = false;
  //
- WQ_ReadPos = 0;
- WQ_WritePos = 0;
- WQ_InCount.store(0, std::memory_order_release); 
- DrawCounter.store(0, std::memory_order_release);
+ Prod = {};
+ Cons = {};
+ WQ_PushCount.store(0, std::memory_order_release);
+ WQ_PopCount.store(0, std::memory_order_release);
+ DrawFinishCount.store(0, std::memory_order_release);
  WakeupSem = ssem_new(0);
  RThread = sthread_create(RThreadEntry, NULL);
 }
@@ -3346,7 +3375,7 @@ void VDP2REND_StartFrame(EmulateSpecStruct* espec_arg, const bool clock28m, cons
 
 void VDP2REND_EndFrame(void)
 {
- while(MDFN_UNLIKELY(DrawCounter.load(std::memory_order_acquire) != 0))
+ while(MDFN_UNLIKELY(DrawFinishCount.load(std::memory_order_acquire) != Prod.DrawPushLocal))
  {
    ssem_signal(WakeupSem);
    retro_sleep(1);
@@ -3391,7 +3420,8 @@ void VDP2REND_DrawLine(const int vdp2_line, const uint32 crt_line, const bool fi
   if(espec->InterlaceOn)
    out_line = (out_line << 1) | espec->InterlaceField;
 
-  auto wdcq = DrawCounter.fetch_add(1, std::memory_order_release);
+  const uint32 wdcq = Prod.DrawPushLocal - DrawFinishCount.load(std::memory_order_acquire);
+  ++Prod.DrawPushLocal;
   WWQ(COMMAND_DRAW_LINE, ((uint16)vdp2_line << 16) | out_line, field);
   //
   //
@@ -3444,7 +3474,7 @@ void VDP2REND_Write16_DB(uint32 A, uint16 DB)
 
 void VDP2REND_StateAction(StateMem* sm, const unsigned load, const bool data_only, uint16 (&rr)[0x100], uint16 (&cr)[2048], uint16 (&vr)[262144])
 {
- while(MDFN_UNLIKELY(WQ_InCount.load(std::memory_order_acquire) != 0))
+ while(MDFN_UNLIKELY(WQ_PopCount.load(std::memory_order_acquire) != Prod.PushLocal))
  {
   ssem_signal(WakeupSem);
   retro_sleep(1);
