@@ -452,6 +452,29 @@ ifeq (,$(findstring msvc,$(platform)))
     CXXFLAGS += -MMD -MP
 endif
 
+# DSP JIT (SCU + SCSP MPROG): on by default.  The aarch64 backend uses
+# oaknut (C++20, header-only) via thin extern-"C" shims
+# (scu_dsp_jit_oaknut.cpp / scsp_dsp_jit_oaknut.cpp); the JIT bodies
+# themselves are C (scu_dsp_jit.c / scsp_dsp_jit.c).  Source-level
+# guards keep the JIT a no-op on non-aarch64 builds.  A runtime
+# libretro option (`beetle_saturn_jit`) further gates whether the
+# compiled JIT code is dispatched.  Pass WANT_JIT=0 to drop the JIT at
+# compile time (slightly smaller binary, no oaknut dep).
+WANT_JIT ?= 1
+ifeq ($(WANT_JIT), 1)
+    CFLAGS   += -DWANT_JIT
+    CXXFLAGS += -DWANT_JIT
+endif
+# SCU DSP JIT perf jitdump emitter: writes /tmp/jit-<pid>.dump in the
+# Linux perf jitdump format so `perf inject --jit` can resolve [JIT] tid
+# samples to per-slot symbols (dsp_<l|n>_pc<XX>_<kind>).  Diagnostic
+# only; the writer itself is cheap (one writev per compiled slot) but
+# the dump file grows unbounded over long runs.  Requires WANT_JIT=1.
+ifeq ($(WANT_DSP_JIT_PERF_DUMP), 1)
+    CFLAGS += -DWANT_DSP_JIT_PERF_DUMP
+endif
+$(CORE_EMU_DIR)/scu_dsp_jit_oaknut.o:   CXXFLAGS += -std=c++20 -I$(DEPS_DIR)/oaknut/include
+
 OBJOUT   = -o
 LINKOUT  = -o 
 

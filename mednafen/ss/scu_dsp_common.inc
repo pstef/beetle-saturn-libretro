@@ -34,6 +34,11 @@
  * a C-future) and any other future C consumer say plain `DSPS*`. */
 typedef struct DSPS DSPS;
 
+#ifdef WANT_JIT
+ #include "scu_dsp_jit.h"
+extern bool setting_jit_scu;
+#endif
+
 // See loop in "SCU_UpdateDSP()" in scu.inc, and END/ENDI handling in scu_dsp_misc.cpp
 enum { DSP_EndCCSubVal = 1000000 };
 
@@ -234,6 +239,23 @@ static FORCE_INLINE uint64_t DSP_DecodeInstruction(const uint32_t instr, const b
  }
 
  return ((uint64_t)instr << 32) | (uint32_t)((uintptr_t)aal - DSP_INSTR_BASE_UIPT);
+}
+
+/* Same return format as DSP_DecodeInstruction; routes through the
+ * per-slot JIT cache and falls back to the C handler on miss. */
+static FORCE_INLINE uint64_t DSP_DecodeSlotInstruction(uint8_t pc, const uint32_t instr, const bool looped)
+{
+#ifdef WANT_JIT
+ if(setting_jit_scu)
+ {
+  void (* const jit_entry)(struct DSPS*) = SCU_DSP_JIT_CompileSlot(pc, looped, instr);
+  if(jit_entry)
+   return ((uint64_t)instr << 32) | (uint32_t)((uintptr_t)jit_entry - DSP_INSTR_BASE_UIPT);
+ }
+#else
+ (void)pc;
+#endif
+ return DSP_DecodeInstruction(instr, looped);
 }
 
 /* Phase-5a: was `template<bool looped> static FORCE_INLINE uint32_t
