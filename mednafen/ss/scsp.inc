@@ -193,8 +193,17 @@ static INLINE void SS_SCSP_RecalcShortWaveMask(SS_SCSP* z, SS_SCSP_Slot* s)
 
 void SS_SCSP_Reset(SS_SCSP* z, bool powering_up)
 {
+#ifdef WANT_JIT
+ if(setting_jit_scsp)
+ {
+  if(powering_up)
+   SCSP_DSP_JIT_Init(z);
+  else
+   SCSP_DSP_JIT_Reset(z);
+ }
+#endif
  //
- // May need to add a DecodeSlotReg() function or something similar if we implement 
+ // May need to add a DecodeSlotReg() function or something similar if we implement
  // more aggressive slot register value optimizations on writes in the future.
  //
  memset(z->SlotRegs, 0, sizeof(z->SlotRegs));
@@ -1168,8 +1177,13 @@ INLINE void SS_SCSP_RW_u8_W1(SS_SCSP* z, uint32_t A, uint8_t* DBV_p)
 	{
 	 uint16_t tmp = z->RBP | (z->RBL << 7);
 	 tmp = (tmp &~ mask) | (((*DBV_p) << shift) & mask);
-	 z->RBP = tmp & 0x7F;
-	 z->RBL = (tmp >> 7) & 0x3;
+	 const uint8_t new_RBP = tmp & 0x7F;
+	 const uint8_t new_RBL = (tmp >> 7) & 0x3;
+	 // JIT folds RBL/RBP at emit time, so changes force a recompile.
+	 if(new_RBL != z->RBL || new_RBP != z->RBP)
+	  z->DSP.MPROG_Dirty = true;
+	 z->RBP = new_RBP;
+	 z->RBL = new_RBL;
 	}
 	break;
 
@@ -1634,8 +1648,12 @@ INLINE void SS_SCSP_RW_u16_W1(SS_SCSP* z, uint32_t A, uint16_t* DBV_p)
 	{
 	 uint16_t tmp = z->RBP | (z->RBL << 7);
 	 tmp = (tmp &~ mask) | (((*DBV_p) << shift) & mask);
-	 z->RBP = tmp & 0x7F;
-	 z->RBL = (tmp >> 7) & 0x3;
+	 const uint8_t new_RBP = tmp & 0x7F;
+	 const uint8_t new_RBL = (tmp >> 7) & 0x3;
+	 if(new_RBL != z->RBL || new_RBP != z->RBP)
+	  z->DSP.MPROG_Dirty = true;
+	 z->RBP = new_RBP;
+	 z->RBL = new_RBL;
 	}
 	break;
 
@@ -2270,15 +2288,12 @@ static void SS_SCSP_DecodeMPROG(SS_SCSP* z)
  z->DSP.MPROG_Dirty = false;
 }
 
-static INLINE void SS_SCSP_RunDSP(SS_SCSP* z)
+/* Extracted from RunDSP so the JIT can BL one step at a time. */
+static INLINE void SS_SCSP_RunDSPStep(SS_SCSP* z, unsigned step)
 {
- if(z->DSP.MPROG_Dirty)
-  SS_SCSP_DecodeMPROG(z);
-
- for(unsigned step = 0; step < 128; step++)
  {
   const SS_SCSP_DSPStep* s = &z->DSP.MPROG_Decoded[step];
-  if(!s->live) continue;
+  if(!s->live) return;
   const uint32_t f = s->flags;
   const unsigned IRA = s->IRA;
   const unsigned TEMPWriteAddr = (s->TWA + z->DSP.MDEC_CT) & 0x7F;
@@ -2432,10 +2447,38 @@ static INLINE void SS_SCSP_RunDSP(SS_SCSP* z)
                                   : (uint16_t)((INPUTS >> 16) & 0xFFF);
   }
  }
+}
+
+static INLINE void SS_SCSP_RunDSPInterpreter(SS_SCSP* z)
+{
+ for(unsigned step = 0; step < 128; step++)
+  SS_SCSP_RunDSPStep(z, step);
 
  if(!z->DSP.MDEC_CT)
   z->DSP.MDEC_CT = (0x2000 << z->RBL);
  z->DSP.MDEC_CT--;
+}
+
+static INLINE void SS_SCSP_RunDSP(SS_SCSP* z)
+{
+ if(z->DSP.MPROG_Dirty)
+ {
+  SS_SCSP_DecodeMPROG(z);
+#ifdef WANT_JIT
+  if(setting_jit_scsp)
+   SCSP_DSP_JIT_Compile(z);
+#endif
+ }
+
+#ifdef WANT_JIT
+ if(MDFN_LIKELY(setting_jit_scsp && SCSP_DSP_JIT_Entry != nullptr))
+ {
+  SCSP_DSP_JIT_Entry(z);
+  return;
+ }
+#endif
+
+ SS_SCSP_RunDSPInterpreter(z);
 }
 #endif
 //
@@ -2967,8 +3010,14 @@ void SS_SCSP_SetRegister(SS_SCSP* z, const unsigned id, const uint32_t value)
 	break;
 
   case GSREG_RBC:
-	z->RBP = value & 0x7F;
-	z->RBL = (value >> 7) & 0x3;
+	{
+	 const uint8_t new_RBP = value & 0x7F;
+	 const uint8_t new_RBL = (value >> 7) & 0x3;
+	 if(new_RBL != z->RBL || new_RBP != z->RBP)
+	  z->DSP.MPROG_Dirty = true;
+	 z->RBP = new_RBP;
+	 z->RBL = new_RBL;
+	}
 	break;
 
   case GSREG_MSLC:

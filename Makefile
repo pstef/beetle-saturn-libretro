@@ -474,6 +474,7 @@ ifeq ($(WANT_DSP_JIT_PERF_DUMP), 1)
     CFLAGS += -DWANT_DSP_JIT_PERF_DUMP
 endif
 $(CORE_EMU_DIR)/scu_dsp_jit_oaknut.o:   CXXFLAGS += -std=c++20 -I$(DEPS_DIR)/oaknut/include
+$(CORE_EMU_DIR)/scsp_dsp_jit_oaknut.o:  CXXFLAGS += -std=c++20 -I$(DEPS_DIR)/oaknut/include
 
 OBJOUT   = -o
 LINKOUT  = -o 

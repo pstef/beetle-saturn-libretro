@@ -34,5 +34,6 @@ extern bool setting_multitap_port2;
 extern bool opposite_directions;
 extern bool setting_midsync;
 extern bool setting_jit_scu;
+extern bool setting_jit_scsp;
 
 #endif

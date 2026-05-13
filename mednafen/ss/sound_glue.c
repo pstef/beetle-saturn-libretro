@@ -38,6 +38,7 @@
 #include "cdb.h"
 
 #include "scsp.h"
+#include "scsp_dsp_jit.h"
 
 /* The two file-static struct instances that drive the Saturn
  * sound module.  Both are zero-initialised at program load
@@ -65,6 +66,20 @@ static INLINE void SCSP_MainIntChanged(SS_SCSP* s, bool state)
 }
 
 #include "scsp.inc"
+
+#ifdef WANT_JIT
+/* Trampolines into scsp.inc's INLINE bodies; placed here so LTO
+ * can inline the body straight into the trampoline. */
+void SCSP_DSP_run_step(SS_SCSP* scsp, unsigned step)
+{
+ SS_SCSP_RunDSPStep(scsp, step);
+}
+
+void SCSP_DSP_run_interpreter(SS_SCSP* scsp)
+{
+ SS_SCSP_RunDSPInterpreter(scsp);
+}
+#endif
 
 /* ===================================================================
  * M68K SoundCPU bus callbacks
