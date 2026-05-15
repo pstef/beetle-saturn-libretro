@@ -106,6 +106,7 @@ static void SH7095_WDT_StandbyReset(SH7095* z);
 static void SH7095_FRT_Reset(SH7095* z);
 static void SH7095_FRT_CheckOCR(SH7095* z);
 static void SH7095_FRT_ClockFRC(SH7095* z);
+static INLINE void SH7095_FRT_TickFRC(SH7095* z, uint32_t N);
 static void SH7095_Cache_AssocPurge(SH7095* z, const uint32_t A);
 static int  SH7095_Cache_FindWay(SH7095* z, SH7095_CacheEntry* const cent, const uint32_t ATM);
 static uint8_t  SH7095_BSC_BusRead_u8 (SH7095* z, uint32_t A, const bool BurstHax, int32_t* SH2DMAHax);
@@ -914,6 +915,158 @@ static INLINE void SH7095_FRT_ClockFRC(SH7095* z)
  SH7095_FRT_CheckOCR(z);
 }
 
+//
+// Closed-form equivalent of calling FRT_ClockFRC() N times in a row.
+// Produces the same end state for FRT.FRC, sticky OVF/OCFA/OCFB bits
+// in FTCSR/FTCSRM, and at most one RecalcPendingIntPEX() invocation
+// (the iterative version coalesces internally with no observer between
+// calls, so collapsing them is observationally equivalent).
+//
+// Per-tick semantics, replicated here:
+//   FRC++
+//   if FRC == 0:       OVF bit (if newly set, RPI)
+//   if FRC == OCRA:    if CCLRA (FTCSR&1): FRC = 0; OCFA bit
+//   if FRC == OCRB:    OCFB bit                  // reads post-reset FRC
+//
+static INLINE void SH7095_FRT_TickFRC(SH7095* z, uint32_t N)
+{
+ if(!N)
+  return;
+
+ const uint16_t OCRA = z->FRT.OCR[0];
+ const uint16_t OCRB = z->FRT.OCR[1];
+ const uint16_t FRC0 = z->FRT.FRC;
+ const bool cclra = (z->FRT.FTCSR & 0x0001) && (OCRA != 0);
+
+ bool ovf_hit  = false;
+ bool ocfa_hit = false;
+ bool ocfb_hit = false;
+ uint16_t FRC_end;
+
+ if(!cclra)
+ {
+  // Free-running mod-0x10000 counter (OCRA does not reset FRC).
+  // OCRA==0 + CCLRA collapses here too: the reset would be a no-op,
+  // and OCFA still fires whenever FRC wraps to 0.
+  const uint32_t end_lin = (uint32_t)FRC0 + N;
+  FRC_end = (uint16_t)end_lin;
+  ovf_hit = (end_lin >> 16) != 0;
+
+  // First i in [1, 0x10000] where (FRC0 + i) & 0xFFFF == target.
+  const uint32_t first_a = (uint32_t)(uint16_t)(OCRA - FRC0 - 1) + 1u;
+  const uint32_t first_b = (uint32_t)(uint16_t)(OCRB - FRC0 - 1) + 1u;
+  ocfa_hit = (N >= first_a);
+  ocfb_hit = (N >= first_b);
+ }
+ else
+ {
+  // CCLRA on, OCRA != 0.  FRC oscillates [0..OCRA-1] with a momentary
+  // OCRA value at the reset tick (immediately cleared before the OCRB
+  // check).  Pre-state may have FRC0 >= OCRA, in which case we first
+  // free-run up through 0xFFFF -> 0 (one OVF, possibly one OCRB hit
+  // along the way), then settle into the steady oscillation.
+  uint32_t remaining = N;
+  uint16_t frc = FRC0;
+
+  if(frc >= OCRA)
+  {
+   const uint32_t ticks_to_wrap = 0x10000u - frc;
+   if(remaining < ticks_to_wrap)
+   {
+    FRC_end = (uint16_t)(frc + remaining);
+    // OCRB hit at i = OCRB - frc when OCRB > frc and within span.
+    if(OCRB > frc && (uint32_t)(OCRB - frc) <= remaining)
+     ocfb_hit = true;
+    goto apply;
+   }
+   ovf_hit = true;
+   // Along the way (i = OCRB - frc) and at the wrap (i = ticks_to_wrap,
+   // FRC = 0) we can pick up an OCRB match.  OCRA cannot match in this
+   // span: OCRA != 0 and FRC only visits frc+1..0xFFFF, 0.
+   if(OCRB > frc || OCRB == 0)
+    ocfb_hit = true;
+   remaining -= ticks_to_wrap;
+   frc = 0;
+  }
+
+  if(remaining > 0)
+  {
+   // Steady state: frc in [0, OCRA).  First OCRA match at i = OCRA - frc.
+   const uint32_t to_first_ocra = (uint32_t)OCRA - frc;
+   if(remaining < to_first_ocra)
+   {
+    FRC_end = (uint16_t)(frc + remaining);
+    if(OCRB > frc && (uint32_t)(OCRB - frc) <= remaining)
+     ocfb_hit = true;
+    goto apply;
+   }
+   ocfa_hit = true;
+   // First partial run reaches OCRA, then resets to 0.  Within ticks
+   // frc+1 .. OCRA-1, OCFB fires iff OCRB lies strictly between frc and
+   // OCRA.  At the reset tick OCFB sees FRC=0, firing iff OCRB == 0.
+   if(OCRB > frc && OCRB < OCRA)
+    ocfb_hit = true;
+   if(OCRB == 0)
+    ocfb_hit = true;
+   remaining -= to_first_ocra;
+   //
+   // Now frc = 0; subsequent full periods of length OCRA each end with
+   // a reset.  The first-partial OCRB check above started from FRC0,
+   // which may be > 0 and thus excludes some values OCRB could hit when
+   // a period starts from 0 -- so re-evaluate the full-period condition.
+   //
+   const uint32_t period = OCRA;
+   const uint32_t full_periods = remaining / period;
+   const uint32_t tail = remaining % period;
+   if(full_periods > 0)
+   {
+    if(OCRB == 0 || (OCRB > 0 && OCRB < OCRA))
+     ocfb_hit = true;
+   }
+   if(tail > 0)
+   {
+    FRC_end = (uint16_t)tail;
+    if(OCRB > 0 && OCRB <= tail)
+     ocfb_hit = true;
+   }
+   else
+   {
+    FRC_end = 0;
+   }
+  }
+  else
+  {
+   FRC_end = frc;
+  }
+ }
+
+apply:
+ z->FRT.FRC = FRC_end;
+
+ bool need_rpi = false;
+ if(ovf_hit && !(z->FRT.FTCSR & 0x02))
+ {
+  z->FRT.FTCSR  |= 0x02;
+  z->FRT.FTCSRM |= 0x02;
+  need_rpi = true;
+ }
+ if(ocfa_hit && !(z->FRT.FTCSR & 0x08))
+ {
+  z->FRT.FTCSR  |= 0x08;
+  z->FRT.FTCSRM |= 0x08;
+  need_rpi = true;
+ }
+ if(ocfb_hit && !(z->FRT.FTCSR & 0x04))
+ {
+  z->FRT.FTCSR  |= 0x04;
+  z->FRT.FTCSRM |= 0x04;
+  need_rpi = true;
+ }
+ if(need_rpi)
+  SH7095_RecalcPendingIntPEX(z);
+}
+
+
 static const uint8_t wdt_cstab[8] = { 1, /**/ 6, 7, 8, 9, 10, /**/ 12, 13 };
 
 //
@@ -970,12 +1123,9 @@ static void SH7095_FRT_WDT_Update(SH7095* z)
  if((z->FRT.TCR & 0x3) != 0x3)	// when == 3, count on rising edge of external clock(not handled here).
  {
   const uint32_t frt_clockshift = 3 + ((z->FRT.TCR & 0x3) << 1);	// /8, /32, /128, count at falling edge
-  uint32_t divided_clocks = (z->FRT_WDT_ClockDivider >> frt_clockshift) - (PreAddCD >> frt_clockshift);
+  const uint32_t divided_clocks = (z->FRT_WDT_ClockDivider >> frt_clockshift) - (PreAddCD >> frt_clockshift);
 
-  while(divided_clocks-- > 0)
-  {
-   SH7095_FRT_ClockFRC(z);
-  }
+  SH7095_FRT_TickFRC(z, divided_clocks);
  }
 
  // z->WDT:
