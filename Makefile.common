@@ -57,7 +57,8 @@ endif
 
 SOURCES_C += $(CORE_EMU_DIR)/ss.c \
              $(CORE_EMU_DIR)/sound_glue.c \
-             $(CORE_EMU_DIR)/scsp_dsp_jit.c
+             $(CORE_EMU_DIR)/scsp_dsp_jit.c \
+             $(CORE_EMU_DIR)/jitdump.c
 
 # sound.cpp -> sound.c + sound_glue.cpp (Phase-6c) -> sound_glue.c
 # (Phase-9).  The orchestration half (SOUND_* public ABI, the
