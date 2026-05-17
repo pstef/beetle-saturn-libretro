@@ -1,7 +1,7 @@
 #ifndef __LIBRETRO_SETTINGS_HDR__
 #define __LIBRETRO_SETTINGS_HDR__
 
-#include <stdbool.h>
+#include <boolean.h>
 
 enum
 {
@@ -33,5 +33,7 @@ extern bool setting_multitap_port1;
 extern bool setting_multitap_port2;
 extern bool opposite_directions;
 extern bool setting_midsync;
+extern bool setting_jit_scu;
+extern bool setting_jit_scsp;
 
 #endif

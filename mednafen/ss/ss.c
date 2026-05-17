@@ -27,8 +27,12 @@
  * already pure C in everything except the #include surface.  The
  * MDFNGI typedef ss.cpp needs for `extern MDFNGI EmulatedSS;` lives
  * in mdfn_gameinfo.h which is C-clean (factored out of git.h
- * specifically so C TUs can include it). */
+ * specifically so C TUs can include it).  EmulateSpecStruct lives
+ * in emuspec.h for the same reason -- typedef'd at file scope so
+ * both C and C++ TUs can name the type without the `struct`
+ * keyword. */
 #include "../mdfn_gameinfo.h"
+#include "../emuspec.h"
 #include "../general.h"
 #include "../cdrom/cdromif.h"
 #include "../cdstream.h"
@@ -103,7 +107,7 @@ SH7095 CPU[2];
  * (static storage duration) and the once-only per-CPU init that the
  * ctor used to do moves into SH7095_ConstructAll below.  Called from
  * InitCommon() before either CPU is touched. */
-extern "C" MDFN_COLD void SH7095_ConstructAll(void)
+MDFN_COLD void SH7095_ConstructAll(void)
 {
  SH7095_Construct(&CPU[0], "SH2-M", SS_EVENT_SH2_M_DMA, SCU_MSH2VectorFetch);
  SH7095_Construct(&CPU[1], "SH2-S", SS_EVENT_SH2_S_DMA, SCU_SSH2VectorFetch);
@@ -121,21 +125,33 @@ extern "C" MDFN_COLD void SH7095_ConstructAll(void)
  * C++-only (it exposes the class, and there is no current C TU that
  * needs anything beyond these two methods); when more SH7095
  * operations need C-callable proxies they should be added here. */
-extern "C" void SH7095_SetActive(int cpu, bool active)
+/* Phase-9 follow-up: these C-callable proxies used to shadow the
+ * SH7095*-primary `SH7095_SetActive` / `SH7095_SetNMI` decls in
+ * sh7095.h via C++ overloading (same name, different signature,
+ * different linkage namespace).  Once sh7095.h became C-parseable
+ * the overload collapsed to a redefinition: C has no overloading.
+ *
+ * Both wrappers were always called with hard-coded CPU indices
+ * (SetActive only ever with 1 = slave, SetNMI only ever with
+ * 0 = master), so the right shape is `SH7095_M_*` / `SH7095_S_*`
+ * matching the existing SH7095_M_Init / SH7095_M_Reset naming
+ * convention -- drop the int parameter, encode the CPU in the
+ * function name. */
+void SH7095_S_SetActive(bool active)
 {
- SH7095_SetActive(&CPU[cpu], active);
+ SH7095_SetActive(&CPU[1], active);
 }
 
-extern "C" void SH7095_SetNMI(int cpu, bool level)
+void SH7095_M_SetNMI(bool level)
 {
- SH7095_SetNMI(&CPU[cpu], level);
+ SH7095_SetNMI(&CPU[0], level);
 }
 
 /* Used by vdp2.c (converted from C++) for the HORRIBLEHACK_NOSH2DMA-
  * LINE106 path -- vdp2's CPU loop iterates CPU[0..1] once per scanline
  * advance and sets the kludge flag.  Matches the SetActive / SetNMI
  * proxies above; cpu index picks master (0) / slave (1). */
-extern "C" void SH7095_SetExtHaltDMAKludge(int cpu, bool state)
+void SH7095_SetExtHaltDMAKludge(int cpu, bool state)
 {
  SH7095_SetExtHaltDMAKludgeFromVDP2(&CPU[cpu], state);
 }
@@ -221,7 +237,7 @@ int ActiveCartType;		// Used in save states.
  * via source-fold.  Only (u8/u16) x (W0/W1) tuples are
  * invoked by callers in sh7095.inc; no u32 CS0 access. */
 
-static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -254,7 +270,7 @@ static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t& DB, const bool
     * write width.  Compiler folds away the dead branches per
     * template instantiation. */
    const uint32_t boff_ = A & 0xFFFFF;
-   const uint8_t val_ = DB >> (((A & 1) ^ (2 - 1)) << 3);
+   const uint8_t val_ = *DB >> (((A & 1) ^ (2 - 1)) << 3);
    {
 #ifdef MSB_FIRST
     ((uint8_t*)WorkRAML)[boff_] = val_;
@@ -295,7 +311,7 @@ static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t& DB, const bool
 
   {
    if(false || (A & 1))
-    SMPC_Write(SH7095_mem_timestamp, SMPC_A, DB);
+    SMPC_Write(SH7095_mem_timestamp, SMPC_A, *DB);
   }
 
   return;
@@ -316,9 +332,9 @@ static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t& DB, const bool
    {
     uint8_t* const brp = &BackupRAM[(A >> 1) & 0x7FFF];
 
-    if(*brp != (uint8_t)DB)
+    if(*brp != (uint8_t)*DB)
     {
-     *brp = (uint8_t)DB;
+     *brp = (uint8_t)*DB;
      BackupRAM_Dirty = true;
     }
    }
@@ -363,7 +379,7 @@ static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t& DB, const bool
 
   {
    if(false || (A & 1))
-    STVIO_WriteIOGA(SH7095_mem_timestamp, IOGA_A, (uint8_t)DB);
+    STVIO_WriteIOGA(SH7095_mem_timestamp, IOGA_A, (uint8_t)*DB);
   }
 
   return;
@@ -378,7 +394,7 @@ static INLINE void BusRW_DB_CS0_u8_W1(const uint32_t A, uint32_t& DB, const bool
   *SH2DMAHax += 4;
 }
 
-static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -411,7 +427,7 @@ static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t& DB, const boo
     * write width.  Compiler folds away the dead branches per
     * template instantiation. */
    const uint32_t boff_ = A & 0xFFFFF;
-   const uint16_t val_ = DB >> (((A & 1) ^ (2 - 2)) << 3);
+   const uint16_t val_ = *DB >> (((A & 1) ^ (2 - 2)) << 3);
    WorkRAML[boff_ >> 1] = val_;
   }
 
@@ -446,7 +462,7 @@ static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t& DB, const boo
 
   {
    if(true || (A & 1))
-    SMPC_Write(SH7095_mem_timestamp, SMPC_A, DB);
+    SMPC_Write(SH7095_mem_timestamp, SMPC_A, *DB);
   }
 
   return;
@@ -467,9 +483,9 @@ static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t& DB, const boo
    {
     uint8_t* const brp = &BackupRAM[(A >> 1) & 0x7FFF];
 
-    if(*brp != (uint8_t)DB)
+    if(*brp != (uint8_t)*DB)
     {
-     *brp = (uint8_t)DB;
+     *brp = (uint8_t)*DB;
      BackupRAM_Dirty = true;
     }
    }
@@ -519,7 +535,7 @@ static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t& DB, const boo
 
   {
    if(true || (A & 1))
-    STVIO_WriteIOGA(SH7095_mem_timestamp, IOGA_A, (uint8_t)DB);
+    STVIO_WriteIOGA(SH7095_mem_timestamp, IOGA_A, (uint8_t)*DB);
   }
 
   return;
@@ -534,7 +550,7 @@ static INLINE void BusRW_DB_CS0_u16_W1(const uint32_t A, uint32_t& DB, const boo
   *SH2DMAHax += 4;
 }
 
-static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -557,7 +573,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
   //
   if(MDFN_UNLIKELY(A & 0x100000))
   {
-   DB = DB | 0xFFFF;
+   *DB = *DB | 0xFFFF;
 
    return;
   }
@@ -565,7 +581,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
   {
    /* ne16_rbo_be<uint16_t>(WorkRAML, byte_off): aligned u16 read
     * — host-endian-stored slot, direct index. */
-   DB = (DB & 0xFFFF0000) | WorkRAML[(A & 0xFFFFE) >> 1];
+   *DB = (*DB & 0xFFFF0000) | WorkRAML[(A & 0xFFFFE) >> 1];
   }
 
   return;
@@ -581,7 +597,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
   else
    *SH2DMAHax += 8;
 
-  DB = (DB & 0xFFFF0000) | BIOSROM[(A & 0x7FFFE) >> 1];
+  *DB = (*DB & 0xFFFF0000) | BIOSROM[(A & 0x7FFFE) >> 1];
 
   return;
  }
@@ -599,7 +615,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
    CheckEventsByMemTS();
   }
 
-  DB = (DB & 0xFFFF0000) | 0xFF00 | SMPC_Read(SH7095_mem_timestamp, SMPC_A);
+  *DB = (*DB & 0xFFFF0000) | 0xFF00 | SMPC_Read(SH7095_mem_timestamp, SMPC_A);
 
   return;
  }
@@ -614,7 +630,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
   else
    *SH2DMAHax += 8;
 
-  DB = (DB & 0xFFFF0000) | 0xFF00 | BackupRAM[(A >> 1) & 0x7FFF];
+  *DB = (*DB & 0xFFFF0000) | 0xFF00 | BackupRAM[(A >> 1) & 0x7FFF];
 
   return;
  }
@@ -650,7 +666,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
 
   const uint8_t IOGA_A = (A >> 1) & 0x3F;
 
-  DB = (DB & 0xFFFF0000) | 0xFF00 | STVIO_ReadIOGA(SH7095_mem_timestamp, IOGA_A);
+  *DB = (*DB & 0xFFFF0000) | 0xFF00 | STVIO_ReadIOGA(SH7095_mem_timestamp, IOGA_A);
 
   return;
  }
@@ -664,7 +680,7 @@ static INLINE void BusRW_DB_CS0_u8_W0(const uint32_t A, uint32_t& DB, const bool
   *SH2DMAHax += 4;
 }
 
-static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -687,7 +703,7 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
   //
   if(MDFN_UNLIKELY(A & 0x100000))
   {
-   DB = DB | 0xFFFF;
+   *DB = *DB | 0xFFFF;
 
    return;
   }
@@ -695,7 +711,7 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
   {
    /* ne16_rbo_be<uint16_t>(WorkRAML, byte_off): aligned u16 read
     * — host-endian-stored slot, direct index. */
-   DB = (DB & 0xFFFF0000) | WorkRAML[(A & 0xFFFFE) >> 1];
+   *DB = (*DB & 0xFFFF0000) | WorkRAML[(A & 0xFFFFE) >> 1];
   }
 
   return;
@@ -711,7 +727,7 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
   else
    *SH2DMAHax += 8;
 
-  DB = (DB & 0xFFFF0000) | BIOSROM[(A & 0x7FFFE) >> 1];
+  *DB = (*DB & 0xFFFF0000) | BIOSROM[(A & 0x7FFFE) >> 1];
 
   return;
  }
@@ -729,7 +745,7 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
    CheckEventsByMemTS();
   }
 
-  DB = (DB & 0xFFFF0000) | 0xFF00 | SMPC_Read(SH7095_mem_timestamp, SMPC_A);
+  *DB = (*DB & 0xFFFF0000) | 0xFF00 | SMPC_Read(SH7095_mem_timestamp, SMPC_A);
 
   return;
  }
@@ -744,7 +760,7 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
   else
    *SH2DMAHax += 8;
 
-  DB = (DB & 0xFFFF0000) | 0xFF00 | BackupRAM[(A >> 1) & 0x7FFF];
+  *DB = (*DB & 0xFFFF0000) | 0xFF00 | BackupRAM[(A >> 1) & 0x7FFF];
 
   return;
  }
@@ -780,7 +796,7 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
 
   const uint8_t IOGA_A = (A >> 1) & 0x3F;
 
-  DB = (DB & 0xFFFF0000) | 0xFF00 | STVIO_ReadIOGA(SH7095_mem_timestamp, IOGA_A);
+  *DB = (*DB & 0xFFFF0000) | 0xFF00 | STVIO_ReadIOGA(SH7095_mem_timestamp, IOGA_A);
 
   return;
  }
@@ -800,22 +816,22 @@ static INLINE void BusRW_DB_CS0_u16_W0(const uint32_t A, uint32_t& DB, const boo
  * ladder to SCU_FromSH2_BusRW_DB_* collapses to one
  * direct named call per variant. */
 
-static INLINE void BusRW_DB_CS12_u8_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS12_u8_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
  // CS1 and CS2: SCU
  //
- DB = 0;
+ *DB = 0;
 
  /* Phase-8q3: sizeof(T) + IsWrite fold at BusRW_DB_CS12
   * template instantiation. */
  {
-  SCU_FromSH2_BusRW_DB_u8_W0 (A, &DB, SH2DMAHax);
+  SCU_FromSH2_BusRW_DB_u8_W0 (A, DB, SH2DMAHax);
  }
 }
 
-static INLINE void BusRW_DB_CS12_u8_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS12_u8_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -825,26 +841,26 @@ static INLINE void BusRW_DB_CS12_u8_W1(const uint32_t A, uint32_t& DB, const boo
  /* Phase-8q3: sizeof(T) + IsWrite fold at BusRW_DB_CS12
   * template instantiation. */
  {
-  SCU_FromSH2_BusRW_DB_u8_W1 (A, &DB, SH2DMAHax);
+  SCU_FromSH2_BusRW_DB_u8_W1 (A, DB, SH2DMAHax);
  }
 }
 
-static INLINE void BusRW_DB_CS12_u16_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS12_u16_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
  // CS1 and CS2: SCU
  //
- DB = 0;
+ *DB = 0;
 
  /* Phase-8q3: sizeof(T) + IsWrite fold at BusRW_DB_CS12
   * template instantiation. */
  {
-  SCU_FromSH2_BusRW_DB_u16_W0(A, &DB, SH2DMAHax);
+  SCU_FromSH2_BusRW_DB_u16_W0(A, DB, SH2DMAHax);
  }
 }
 
-static INLINE void BusRW_DB_CS12_u16_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS12_u16_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -854,26 +870,26 @@ static INLINE void BusRW_DB_CS12_u16_W1(const uint32_t A, uint32_t& DB, const bo
  /* Phase-8q3: sizeof(T) + IsWrite fold at BusRW_DB_CS12
   * template instantiation. */
  {
-  SCU_FromSH2_BusRW_DB_u16_W1(A, &DB, SH2DMAHax);
+  SCU_FromSH2_BusRW_DB_u16_W1(A, DB, SH2DMAHax);
  }
 }
 
-static INLINE void BusRW_DB_CS12_u32_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS12_u32_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
  // CS1 and CS2: SCU
  //
- DB = 0;
+ *DB = 0;
 
  /* Phase-8q3: sizeof(T) + IsWrite fold at BusRW_DB_CS12
   * template instantiation. */
  {
-  SCU_FromSH2_BusRW_DB_u32_W0(A, &DB, SH2DMAHax);
+  SCU_FromSH2_BusRW_DB_u32_W0(A, DB, SH2DMAHax);
  }
 }
 
-static INLINE void BusRW_DB_CS12_u32_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS12_u32_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -883,7 +899,7 @@ static INLINE void BusRW_DB_CS12_u32_W1(const uint32_t A, uint32_t& DB, const bo
  /* Phase-8q3: sizeof(T) + IsWrite fold at BusRW_DB_CS12
   * template instantiation. */
  {
-  SCU_FromSH2_BusRW_DB_u32_W1(A, &DB, SH2DMAHax);
+  SCU_FromSH2_BusRW_DB_u32_W1(A, DB, SH2DMAHax);
  }
 }
 
@@ -891,7 +907,7 @@ static INLINE void BusRW_DB_CS12_u32_W1(const uint32_t A, uint32_t& DB, const bo
 /* Phase-8r2: BusRW_DB_CS3 retired into 6 named variants
  * via source-fold. */
 
-static INLINE void BusRW_DB_CS3_u8_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS3_u8_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -900,17 +916,17 @@ static INLINE void BusRW_DB_CS3_u8_W0(const uint32_t A, uint32_t& DB, const bool
  //  Timing is handled in BSC_BusWrite() and BSC_BusRead() in sh7095.inc
  //
  {
-  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, &DB) folded:
+  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, DB) folded:
    * aligned uint32_t BE bus read or write over uint16_t array.  Two
    * uint16_t halves: upper at index, lower at index+1.  Same on
    * BE and LE hosts (host-endian uint16s combined in MSB-first
    * order). */
   const uint32_t idx_ = (A & 0xFFFFC) >> 1;
-  DB = ((uint32_t)WorkRAMH[idx_] << 16) | WorkRAMH[idx_ + 1];
+  *DB = ((uint32_t)WorkRAMH[idx_] << 16) | WorkRAMH[idx_ + 1];
  }
 }
 
-static INLINE void BusRW_DB_CS3_u8_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS3_u8_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -922,7 +938,7 @@ static INLINE void BusRW_DB_CS3_u8_W1(const uint32_t A, uint32_t& DB, const bool
   /* ne16_wbo_be<T>(WorkRAMH, byte_off, val) folded.  T is uint8_t
    * or uint16_t here (uint32_t caught above). */
   const uint32_t boff_ = A & 0xFFFFF;
-  const uint8_t val_ = DB >> (((A & 3) ^ (4 - 1)) << 3);
+  const uint8_t val_ = *DB >> (((A & 3) ^ (4 - 1)) << 3);
   {
 #ifdef MSB_FIRST
    ((uint8_t*)WorkRAMH)[boff_] = val_;
@@ -933,7 +949,7 @@ static INLINE void BusRW_DB_CS3_u8_W1(const uint32_t A, uint32_t& DB, const bool
  }
 }
 
-static INLINE void BusRW_DB_CS3_u16_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS3_u16_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -942,17 +958,17 @@ static INLINE void BusRW_DB_CS3_u16_W0(const uint32_t A, uint32_t& DB, const boo
  //  Timing is handled in BSC_BusWrite() and BSC_BusRead() in sh7095.inc
  //
  {
-  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, &DB) folded:
+  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, DB) folded:
    * aligned uint32_t BE bus read or write over uint16_t array.  Two
    * uint16_t halves: upper at index, lower at index+1.  Same on
    * BE and LE hosts (host-endian uint16s combined in MSB-first
    * order). */
   const uint32_t idx_ = (A & 0xFFFFC) >> 1;
-  DB = ((uint32_t)WorkRAMH[idx_] << 16) | WorkRAMH[idx_ + 1];
+  *DB = ((uint32_t)WorkRAMH[idx_] << 16) | WorkRAMH[idx_ + 1];
  }
 }
 
-static INLINE void BusRW_DB_CS3_u16_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS3_u16_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -964,12 +980,12 @@ static INLINE void BusRW_DB_CS3_u16_W1(const uint32_t A, uint32_t& DB, const boo
   /* ne16_wbo_be<T>(WorkRAMH, byte_off, val) folded.  T is uint8_t
    * or uint16_t here (uint32_t caught above). */
   const uint32_t boff_ = A & 0xFFFFF;
-  const uint16_t val_ = DB >> (((A & 3) ^ (4 - 2)) << 3);
+  const uint16_t val_ = *DB >> (((A & 3) ^ (4 - 2)) << 3);
   WorkRAMH[boff_ >> 1] = val_;
  }
 }
 
-static INLINE void BusRW_DB_CS3_u32_W0(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS3_u32_W0(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -978,17 +994,17 @@ static INLINE void BusRW_DB_CS3_u32_W0(const uint32_t A, uint32_t& DB, const boo
  //  Timing is handled in BSC_BusWrite() and BSC_BusRead() in sh7095.inc
  //
  {
-  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, &DB) folded:
+  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, DB) folded:
    * aligned uint32_t BE bus read or write over uint16_t array.  Two
    * uint16_t halves: upper at index, lower at index+1.  Same on
    * BE and LE hosts (host-endian uint16s combined in MSB-first
    * order). */
   const uint32_t idx_ = (A & 0xFFFFC) >> 1;
-  DB = ((uint32_t)WorkRAMH[idx_] << 16) | WorkRAMH[idx_ + 1];
+  *DB = ((uint32_t)WorkRAMH[idx_] << 16) | WorkRAMH[idx_ + 1];
  }
 }
 
-static INLINE void BusRW_DB_CS3_u32_W1(const uint32_t A, uint32_t& DB, const bool BurstHax, int32_t* SH2DMAHax)
+static INLINE void BusRW_DB_CS3_u32_W1(const uint32_t A, uint32_t* DB, const bool BurstHax, int32_t* SH2DMAHax)
 {
 
  //
@@ -997,15 +1013,15 @@ static INLINE void BusRW_DB_CS3_u32_W1(const uint32_t A, uint32_t& DB, const boo
  //  Timing is handled in BSC_BusWrite() and BSC_BusRead() in sh7095.inc
  //
  {
-  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, &DB) folded:
+  /* ne16_rwbo_be<uint32_t, IsWrite>(WorkRAMH, byte_off, DB) folded:
    * aligned uint32_t BE bus read or write over uint16_t array.  Two
    * uint16_t halves: upper at index, lower at index+1.  Same on
    * BE and LE hosts (host-endian uint16s combined in MSB-first
    * order). */
   const uint32_t idx_ = (A & 0xFFFFC) >> 1;
   {
-   WorkRAMH[idx_ + 0] = DB >> 16;
-   WorkRAMH[idx_ + 1] = DB;
+   WorkRAMH[idx_ + 0] = *DB >> 16;
+   WorkRAMH[idx_ + 1] = *DB;
   }
  }
 }
@@ -1060,8 +1076,8 @@ static MDFN_COLD void CheatMemWrite(uint32_t A, uint8_t V)
  * extern "C" SH7095_{M,S}_DMA_Update helpers below that wrap the
  * C++-only SH7095_DMA_Update(&CPU[c], et) method dispatch. */
 
-extern "C" int32_t SH7095_M_DMA_Update(int32_t et) { return SH7095_DMA_Update(&CPU[0], et); }
-extern "C" int32_t SH7095_S_DMA_Update(int32_t et) { return SH7095_DMA_Update(&CPU[1], et); }
+int32_t SH7095_M_DMA_Update(int32_t et) { return SH7095_DMA_Update(&CPU[0], et); }
+int32_t SH7095_S_DMA_Update(int32_t et) { return SH7095_DMA_Update(&CPU[1], et); }
 
 /* ForceEventUpdates stays in ss.cpp -- the first loop dispatches into
  * SH7095_ForceInternalEventUpdates(&CPU[c]), which is an SH7095 class method
@@ -1193,22 +1209,22 @@ static NO_INLINE MDFN_HOT int32_t RunLoop_NoICache(EmulateSpecStruct* espec)
  * first loop calls CPU[c].ForceInternalEventUpdates (an SH7095 class
  * method); SH7095_{M,S}_AdjustTS wraps CPU[0/1].AdjustTS.  All four
  * retire once the SH7095 class becomes a C struct. */
-extern "C" int32_t SS_RunLoop_ICache(EmulateSpecStruct* espec)                                   { return RunLoop_ICache(espec); }
-extern "C" int32_t SS_RunLoop_NoICache(EmulateSpecStruct* espec)                                 { return RunLoop_NoICache(espec); }
-extern "C" void    SS_ForceEventUpdates(int32_t timestamp)                                       { ForceEventUpdates(timestamp); }
-extern "C" void    SH7095_M_AdjustTS(int32_t delta)                                              { SH7095_AdjustTS(&CPU[0], delta); }
-extern "C" void    SH7095_S_AdjustTS(int32_t delta)                                              { SH7095_AdjustTS(&CPU[1], delta); }
+int32_t SS_RunLoop_ICache(EmulateSpecStruct* espec)                                   { return RunLoop_ICache(espec); }
+int32_t SS_RunLoop_NoICache(EmulateSpecStruct* espec)                                 { return RunLoop_NoICache(espec); }
+void    SS_ForceEventUpdates(int32_t timestamp)                                       { ForceEventUpdates(timestamp); }
+void    SH7095_M_AdjustTS(int32_t delta)                                              { SH7095_AdjustTS(&CPU[0], delta); }
+void    SH7095_S_AdjustTS(int32_t delta)                                              { SH7095_AdjustTS(&CPU[1], delta); }
 
 /* Phase-7f: SH7095 wrappers used by InitCommon (Init / SetMD5 /
  * TruePowerOn) and SS_Reset (TruePowerOn / Reset).  Retires when
  * SH7095 becomes a C struct. */
-extern "C" MDFN_COLD void SH7095_M_Init(const bool emumode_full, const bool emumode_cb_only)     { SH7095_Init(&CPU[0], emumode_full, emumode_cb_only); }
-extern "C" MDFN_COLD void SH7095_S_Init(const bool emumode_full, const bool emumode_cb_only)     { SH7095_Init(&CPU[1], emumode_full, emumode_cb_only); }
-extern "C" void           SH7095_M_SetMD5(bool level)                                            { SH7095_SetMD5(&CPU[0], level); }
-extern "C" void           SH7095_S_SetMD5(bool level)                                            { SH7095_SetMD5(&CPU[1], level); }
-extern "C" MDFN_COLD void SH7095_M_TruePowerOn(void)                                             { SH7095_TruePowerOn(&CPU[0]); }
-extern "C" MDFN_COLD void SH7095_S_TruePowerOn(void)                                             { SH7095_TruePowerOn(&CPU[1]); }
-extern "C" MDFN_COLD void SH7095_M_Reset(bool power_on_reset)                                    { SH7095_Reset(&CPU[0], power_on_reset, false); }
+MDFN_COLD void SH7095_M_Init(const bool emumode_full, const bool emumode_cb_only)     { SH7095_Init(&CPU[0], emumode_full, emumode_cb_only); }
+MDFN_COLD void SH7095_S_Init(const bool emumode_full, const bool emumode_cb_only)     { SH7095_Init(&CPU[1], emumode_full, emumode_cb_only); }
+void           SH7095_M_SetMD5(bool level)                                            { SH7095_SetMD5(&CPU[0], level); }
+void           SH7095_S_SetMD5(bool level)                                            { SH7095_SetMD5(&CPU[1], level); }
+MDFN_COLD void SH7095_M_TruePowerOn(void)                                             { SH7095_TruePowerOn(&CPU[0]); }
+MDFN_COLD void SH7095_S_TruePowerOn(void)                                             { SH7095_TruePowerOn(&CPU[1]); }
+MDFN_COLD void SH7095_M_Reset(bool power_on_reset)                                    { SH7095_Reset(&CPU[0], power_on_reset, false); }
 
 
 //
@@ -1238,22 +1254,22 @@ extern "C" MDFN_COLD void SH7095_M_Reset(bool power_on_reset)                   
  * through extern "C" wrappers below; those wrappers retire
  * when the SH7095 class becomes a C struct. */
 
-extern "C" void SH7095_M_StateAction(StateMem* sm, const unsigned load, const bool data_only, const char* sname)
+void SH7095_M_StateAction(StateMem* sm, const unsigned load, const bool data_only, const char* sname)
 {
  SH7095_StateAction(&CPU[0], sm, load, data_only, sname);
 }
 
-extern "C" void SH7095_S_StateAction(StateMem* sm, const unsigned load, const bool data_only, const char* sname)
+void SH7095_S_StateAction(StateMem* sm, const unsigned load, const bool data_only, const char* sname)
 {
  SH7095_StateAction(&CPU[1], sm, load, data_only, sname);
 }
 
-extern "C" void SH7095_M_PostStateLoad(const unsigned load, bool prev_NeedEmuICache, bool current_NeedEmuICache)
+void SH7095_M_PostStateLoad(const unsigned load, bool prev_NeedEmuICache, bool current_NeedEmuICache)
 {
  SH7095_PostStateLoad(&CPU[0], load, prev_NeedEmuICache, current_NeedEmuICache);
 }
 
-extern "C" void SH7095_S_PostStateLoad(const unsigned load, bool prev_NeedEmuICache, bool current_NeedEmuICache)
+void SH7095_S_PostStateLoad(const unsigned load, bool prev_NeedEmuICache, bool current_NeedEmuICache)
 {
  SH7095_PostStateLoad(&CPU[1], load, prev_NeedEmuICache, current_NeedEmuICache);
 }

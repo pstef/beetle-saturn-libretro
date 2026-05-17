@@ -90,11 +90,24 @@
 // noclone and emits -Wunknown-attributes at every use site. Keep
 // noclone on real GCC and elide it on clang; the other attributes
 // (hot, cold, always_inline, visibility) are supported by both.
+//
+// MDFN_UNREACHABLE tells the optimizer that a code path is dead
+// (e.g. the `default:` arm of a switch over a known-enumerated
+// integer).  GCC and clang expose `__builtin_unreachable()`; MSVC
+// has had the equivalent `__assume(0)` since VS 2005, which long
+// predates the MSVC C89 target this codebase still wants to
+// compile under.  The fallback path expands to nothing, which is
+// always safe -- the worst case is a bounds-check the optimizer
+// could otherwise have elided.  Useful for dense switch dispatches
+// where every value is accounted for, so the compiler can drop the
+// jump-table bounds check (one indirect jump beats a compare +
+// branch + indirect jump).
 #if defined(__GNUC__) && !defined(__clang__)
  #define MDFN_HOT          __attribute__((hot))
  #define MDFN_COLD         __attribute__((cold))
  #define NO_CLONE          __attribute__((noclone))
  #define MDFN_FORCE_INLINE __attribute__((always_inline)) inline
+ #define MDFN_UNREACHABLE  __builtin_unreachable()
  #if defined(_WIN32) || defined(__CYGWIN__)
   #define MDFN_HIDE
  #else
@@ -105,6 +118,7 @@
  #define MDFN_COLD         __attribute__((cold))
  #define NO_CLONE
  #define MDFN_FORCE_INLINE __attribute__((always_inline)) inline
+ #define MDFN_UNREACHABLE  __builtin_unreachable()
  #if defined(_WIN32) || defined(__CYGWIN__)
   #define MDFN_HIDE
  #else
@@ -116,12 +130,14 @@
  #define MDFN_HIDE
  #define NO_CLONE
  #define MDFN_FORCE_INLINE __forceinline
+ #define MDFN_UNREACHABLE  __assume(0)
 #else
  #define MDFN_HOT
  #define MDFN_COLD
  #define MDFN_HIDE
  #define NO_CLONE
  #define MDFN_FORCE_INLINE inline
+ #define MDFN_UNREACHABLE  /* nothing -- compiler keeps any bounds checks */
 #endif
 
 #ifdef __cplusplus
@@ -144,15 +160,30 @@ template<typename T> typename std::remove_all_extents<T>::type* MDAP(T* v) { ret
 #elif !defined(__cplusplus) && defined(__STDC_VERSION__) && __STDC_VERSION__ >= 201112L
  #define MDFN_STATIC_ASSERT(c_, msg_) _Static_assert((c_), msg_)
 #else
- #ifdef __COUNTER__
-  #define MDFN_STATIC_ASSERT_ID_ __COUNTER__
- #else
-  #define MDFN_STATIC_ASSERT_ID_ __LINE__
- #endif
+ /* C89 / MSVC-89 / pre-C++11 fallback.
+  *
+  * Uniqueness via __LINE__ -- specifically NOT __COUNTER__.  Several
+  * sites in this codebase encode counter checkpoints in their
+  * assertion conditions (e.g.
+  *   `MDFN_STATIC_ASSERT(__COUNTER__ == 5000, "...")`
+  *   `MDFN_STATIC_ASSERT(__COUNTER__ == 5000 + 393 + 512 + 1, "...")`
+  * in sh7095_ops.inc and sh7095.inc).  These rely on __COUNTER__
+  * being incremented exactly once per textual occurrence of
+  * __COUNTER__ in the source.
+  *
+  * If MDFN_STATIC_ASSERT itself expanded __COUNTER__ for its typedef
+  * name, every assertion would silently consume one extra counter
+  * value past what its own condition expanded -- so checkpoints
+  * placed N asserts after the previous checkpoint would drift by N.
+  *
+  * __LINE__ does not have this problem (it's a property of the
+  * source location, not a side-effect-bearing macro), and there
+  * is no instance of two MDFN_STATIC_ASSERT() invocations on the
+  * same source line anywhere in the codebase. */
  #define MDFN_STATIC_ASSERT_CAT2_(a_, b_) a_##b_
  #define MDFN_STATIC_ASSERT_CAT_(a_, b_)  MDFN_STATIC_ASSERT_CAT2_(a_, b_)
  #define MDFN_STATIC_ASSERT(c_, msg_) \
-   typedef char MDFN_STATIC_ASSERT_CAT_(_mdfn_static_assert_, MDFN_STATIC_ASSERT_ID_) \
+   typedef char MDFN_STATIC_ASSERT_CAT_(_mdfn_static_assert_, __LINE__) \
         [(c_) ? 1 : -1] MDFN_NOWARN_UNUSED
 #endif
 

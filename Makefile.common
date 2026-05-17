@@ -55,18 +55,20 @@ ifeq ($(NEED_TREMOR), 1)
    FLAGS += -DNEED_TREMOR
 endif
 
-SOURCES_CXX += \
-	$(CORE_EMU_DIR)/sound_glue.cpp \
-	$(CORE_EMU_DIR)/ss.cpp
+SOURCES_C += $(CORE_EMU_DIR)/ss.c \
+             $(CORE_EMU_DIR)/sound_glue.c \
+             $(CORE_EMU_DIR)/scsp_dsp_jit.c \
+             $(CORE_EMU_DIR)/jitdump.c
 
-# sound.cpp -> sound.c + sound_glue.cpp.  The orchestration half
-# (SOUND_* public ABI, the SOUND_Update 32.32 fixed-point cycle
-# loop, the SCSP IBuffer ring, the setjmp recovery point) moves
-# to C; the C++ class instances (SS_SCSP SCSP, M68K SoundCPU),
-# the eight M68K bus callbacks they need, and scsp.inc stay in
-# the new sound_glue.cpp.  The two halves exchange state through
-# sound_internal.h: a handful of extern "C" SoundGlue_* wrappers
-# around the M68K / SS_SCSP class methods sound.c needs, and four
+# sound.cpp -> sound.c + sound_glue.cpp (Phase-6c) -> sound_glue.c
+# (Phase-9).  The orchestration half (SOUND_* public ABI, the
+# SOUND_Update 32.32 fixed-point cycle loop, the SCSP IBuffer ring,
+# the setjmp recovery point) lives in sound.c; the struct instances
+# (SS_SCSP SCSP, M68K SoundCPU -- both retired from being C++
+# class types), the eight M68K bus callbacks they need, and
+# scsp.inc live in sound_glue.c.  The two halves exchange state
+# through sound_internal.h: a set of SoundGlue_* C-linkage wrappers
+# around the M68K_* / SS_SCSP_* free-function APIs, and four
 # extern symbols (SOUND_next_scsp_time, SOUND_jbuf, IBuffer,
 # SOUND_IBufferCount) owned by sound.c that the glue side reads /
 # writes during the bus-callback and RunSCSP paths.
@@ -90,6 +92,10 @@ SOURCES_CXX += \
 # The STATE_MASK_* enum was hoisted out of `struct DSPS` to file
 # scope so the same `STATE_MASK_EXECUTE` spelling compiles in
 # both C and C++.
+# scu_dsp_jit.c: the SCU DSP slot-dispatch JIT body lives in C
+# (orchestration, emit_*, entry/exit stubs, looped-slot cache,
+# perf jitdump writer).  Instructions are emitted directly via the
+# in-tree a64emit C library.
 
 # db.cpp -> db.c. Dead std:: helpers (DB_GetInternalDB,
 # DB_GetHHDescriptions, FDIDToString) were removed in an earlier
@@ -147,6 +153,8 @@ SOURCES_C += $(CORE_EMU_DIR)/db.c \
 		$(CORE_EMU_DIR)/scu_dsp_mvi.c \
 		$(CORE_EMU_DIR)/scu_dsp_jmp.c \
 		$(CORE_EMU_DIR)/scu_dsp_misc.c \
+		$(CORE_EMU_DIR)/scu_dsp_jit.c \
+		$(CORE_EMU_DIR)/a64emit.c \
 		$(CORE_EMU_DIR)/sound.c \
 		$(CORE_EMU_DIR)/ss_state.c \
 		$(CORE_EMU_DIR)/ss_init.c

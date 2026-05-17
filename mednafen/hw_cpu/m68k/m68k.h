@@ -22,7 +22,25 @@
 #ifndef __MDFN_M68K_H
 #define __MDFN_M68K_H
 
-#include <mednafen/mednafen.h>
+#include "../../mednafen.h"
+
+/* M68K_BUS_INT_ACK_AUTO -- BusIntAck callback can return this to
+ * tell M68K to use automatic interrupt-acknowledge vectoring (auto-
+ * vector mode) instead of supplying an explicit vector number.
+ * File-scope so consumers can spell it without the `M68K::` class-
+ * scope qualifier (needed once sound_glue.cpp becomes sound_glue.c
+ * -- C has no class-scope qualifier syntax).  Value matches the
+ * former class-scoped `M68K::BUS_INT_ACK_AUTO` exactly. */
+enum { M68K_BUS_INT_ACK_AUTO = -1 };
+
+/* C-compat typedef: in C the struct tag is not auto-aliased to a
+ * type name, so the bare `M68K*` spellings used in the data-
+ * member BusRMW function-pointer signature (inside this struct)
+ * and in the M68K_* free-function declarations (after this struct)
+ * fail to parse from a C TU.  Forward-declare the typedef up
+ * front; same pattern scsp.h uses for SS_SCSP_Slot / SS_SCSP_Timer
+ * / SS_SCSP / etc. */
+typedef struct M68K M68K;
 
 /* Phase-9c: class -> struct.  See Phase-9a comment in scsp.h
  * for rationale.  M68K already had `//private:` (commented out)
@@ -31,15 +49,29 @@
 struct M68K
 {
 
- M68K(const bool rev_e = false) MDFN_COLD;
- ~M68K() MDFN_COLD;
+#ifdef __cplusplus
+ /* C++-only: class methods reachable on this struct.  C
+  * consumers see this header as a plain data struct (same
+  * layout, same member offsets).  All bodies live in
+  * m68k.cpp / m68k_instr.inc / m68k_instr_split{0,1}.cpp;
+  * C consumers reach them via the `extern "C"` M68K_* free
+  * functions declared at the bottom of this header. */
+
+ /* Phase-9: M68K::M68K(rev_e) and M68K::~M68K() retired.  Zero
+  * callers after sound_glue.cpp -> sound_glue.c switched to
+  * M68K_Construct.  M68K is pure-data now; instances are
+  * zero-initialised at file scope and finalised with an
+  * explicit M68K_Construct(&inst, rev_e) call. */
 
  void Run(int32_t run_until_time);
 
  void Reset(bool powering_up) MDFN_COLD;
 
- void SetIPL(uint8_t ipl_new);
- void SetExtHalted(bool state);
+ /* Phase-9d-1: SetIPL and SetExtHalted retired from the class.
+  * Bodies moved inline into the M68K_SetIPL / M68K_SetExtHalted
+  * extern "C" wrappers in m68k.cpp -- they were already 1-line
+  * forwarders to z->SetIPL(...) / z->SetExtHalted(...) and the
+  * 8 / 4 line bodies don't need the dispatch round-trip. */
 
 
  //
@@ -63,6 +95,8 @@ struct M68K
  }
 
  void StateAction(StateMem* sm, const unsigned load, const bool data_only, const char* sname);
+
+#endif /* __cplusplus */
 
  //
  //
@@ -110,8 +144,16 @@ struct M68K
   XPENDING_MASK__VALID = XPENDING_MASK_INT | XPENDING_MASK_NMI | XPENDING_MASK_RESET | XPENDING_MASK_ADDRESS | XPENDING_MASK_BUS | XPENDING_MASK_STOPPED | XPENDING_MASK_ERRORHALTED | XPENDING_MASK_DTACKHALTED | XPENDING_MASK_EXTHALTED
  };
 
- const bool Revision_E;
+ /* Set by M68K_Construct / M68K::M68K from the `rev_e` parameter
+  * and never written again.  Was `const bool` -- contractual
+  * single-init via the ctor's member-initializer list.  Dropped
+  * the const so the free-function M68K_Construct can assign to
+  * it (C-style construction has no member-initializer-list
+  * syntax).  Set-once-at-construction is now preserved by
+  * convention, not by compiler-enforced const-correctness. */
+ bool Revision_E;
 
+#ifdef __cplusplus
  //private:
  void RecalcInt(void);
 
@@ -151,6 +193,8 @@ struct M68K
  void RunSplit1(uint16_t instr, const unsigned instr_b11_b9, const unsigned instr_b2_b0);
 #endif
 
+#endif /* __cplusplus */
+
  enum AddressMode
  {
   DATA_REG_DIR,
@@ -173,6 +217,7 @@ struct M68K
   IMMEDIATE
  };
 
+#ifdef __cplusplus
  //
  // MOVE byte and word: instructions, 2 cycle penalty for source predecrement only
  //  	2 cycle penalty for (d8, An, Xn) for both source and dest ams
@@ -216,6 +261,7 @@ struct M68K
  void SetSR(uint16_t val);
 
  bool GetSVisor(void);
+#endif /* __cplusplus */
 
  //
  //
@@ -259,6 +305,7 @@ struct M68K
   EXCEPTION_TRAP
  };
 
+#ifdef __cplusplus
  void NO_INLINE Exception(unsigned which, unsigned vecnum);
 
  template<typename T, typename DT, M68K::AddressMode SAM, M68K::AddressMode DAM>
@@ -492,13 +539,13 @@ struct M68K
  void STOP(void);
 
  bool CheckPrivilege(void);
+#endif /* __cplusplus */
  //
  //
  //
  //
  //
  // These externally-provided functions should add >= 4 to M68K::timestamp per call:
- enum { BUS_INT_ACK_AUTO = -1 };
 
  uint16_t (MDFN_FASTCALL *BusReadInstr)(uint32_t A);
  uint8_t (MDFN_FASTCALL *BusRead8)(uint32_t A);
@@ -544,30 +591,55 @@ struct M68K
   GSREG_USP
  };
 
+#ifdef __cplusplus
  uint32_t GetRegister(unsigned which, char* special = nullptr, const uint32_t special_len = 0);
  void SetRegister(unsigned which, uint32_t value);
+#endif /* __cplusplus */
 };
 
-/* Phase-9 step 3: free-function wrappers around M68K members used by
- * sound_glue.cpp.  Pure inline forwarders; codegen folds to direct
- * member access under -O2.  Member function bodies remain in
- * m68k_private.h / m68k.cpp for now and will be converted to true
- * free functions in a later phase (gated on retirement of the
- * HAM cascade). */
-static FORCE_INLINE void M68K_SetIPL             (M68K* z, uint8_t ipl_new)             { z->SetIPL(ipl_new); }
-static FORCE_INLINE void M68K_SignalDTACKHalted  (M68K* z, uint32_t addr)                { z->SignalDTACKHalted(addr); }
-static FORCE_INLINE void M68K_SignalAddressError (M68K* z, uint32_t addr, uint8_t type)  { z->SignalAddressError(addr, type); }
+/* M68K_* free-function API exposed to consumers of m68k.h.
+ *
+ * All declarations live inside an `extern "C" { ... }` block (gated
+ * by __cplusplus so plain C consumers can include this header
+ * directly) -- the matching definitions in m68k.cpp also use
+ * `extern "C"` linkage.  This makes the wrappers callable from
+ * both C++ and C TUs, with one well-defined ABI symbol per name.
+ *
+ * Trade-off vs the previous `static FORCE_INLINE` header-side
+ * definitions:  we lose call-site inlining of the thunk body
+ * (each wrapper became a real function call to a 1-2 instruction
+ * out-of-line body in m68k.cpp), but gain a C-callable surface
+ * that sound_glue.cpp -> sound_glue.c needs.  None of these
+ * wrappers are on the M68K::Run inner loop -- they're called
+ * from external orchestration code (IRQ change, savestate,
+ * reset, scheduler step, debugger register read/write) -- so
+ * the per-call function-call overhead is negligible in profile
+ * terms.  Phase-9 step 3's original comment about codegen
+ * folding under -O2 stops applying here; cross-TU inlining is
+ * now LTO-dependent.
+ */
+#ifdef __cplusplus
+extern "C" {
+#endif
 
-static FORCE_INLINE void M68K_Reset              (M68K* z, bool pwr)                     { z->Reset(pwr); }
-static FORCE_INLINE void M68K_Run                (M68K* z, int32_t until)                { z->Run(until); }
-static FORCE_INLINE void M68K_SetExtHalted       (M68K* z, bool state)                   { z->SetExtHalted(state); }
-static FORCE_INLINE void M68K_StateAction        (M68K* z, StateMem* sm, const unsigned load,
-                                            const bool data_only, const char* sname)
- { z->StateAction(sm, load, data_only, sname); }
-static FORCE_INLINE uint32_t M68K_GetRegister    (M68K* z, const unsigned id, char* const special, const uint32_t special_len)
- { return z->GetRegister(id, special, special_len); }
-static FORCE_INLINE void M68K_SetRegister        (M68K* z, const unsigned id, const uint32_t value)
- { z->SetRegister(id, value); }
+void     M68K_Construct          (M68K* z, bool rev_e) MDFN_COLD;
+
+void     M68K_SetIPL             (M68K* z, uint8_t ipl_new);
+void     M68K_SignalDTACKHalted  (M68K* z, uint32_t addr);
+void     M68K_SignalAddressError (M68K* z, uint32_t addr, uint8_t type);
+
+void     M68K_Reset              (M68K* z, bool pwr) MDFN_COLD;
+void     M68K_Run                (M68K* z, int32_t until);
+void     M68K_SetExtHalted       (M68K* z, bool state);
+void     M68K_StateAction        (M68K* z, StateMem* sm, const unsigned load,
+                                  const bool data_only, const char* sname);
+uint32_t M68K_GetRegister        (M68K* z, const unsigned id, char* const special,
+                                  const uint32_t special_len);
+void     M68K_SetRegister        (M68K* z, const unsigned id, const uint32_t value);
+
+#ifdef __cplusplus
+} /* extern "C" */
+#endif
 
 
 #endif

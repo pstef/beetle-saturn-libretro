@@ -15,3 +15,5 @@ bool setting_multitap_port1;
 bool setting_multitap_port2;
 bool opposite_directions;
 bool setting_midsync;
+bool setting_jit_scu = true;
+bool setting_jit_scsp = true;

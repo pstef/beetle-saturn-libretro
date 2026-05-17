@@ -1,16 +1,31 @@
- enum : unsigned { which = 1 };
- enum : bool { EmulateICache = true };
- enum : bool { DebugMode = SH7095_DEBUG_MODE };
- enum : bool { CacheBypassHack = false };
+ /* Plain enums (not C++11 `enum : type {}`).  The latter is rejected
+  * by MSVC C89 mode and by strict ISO C.  enum constants are always
+  * `int` in C; the bool / unsigned typed-enum forms in C++11 only
+  * affect the constant's underlying storage type, never its value --
+  * so the downstream `if(EmulateICache)` / `case which:` /
+  * `if(DebugMode)` macro expansions get the same compile-time fold
+  * either way. */
+ enum { which = 1 };
+ enum { EmulateICache = 1 /* true */ };
+ enum { DebugMode = SH7095_DEBUG_MODE };
+ enum { CacheBypassHack = 0 /* false */ };
 
  if(MDFN_UNLIKELY(z->timestamp >= bound_timestamp))
   return;
 
- if(z->ResumePoint)
+ if(z->resume_id)
  {
-  const void* const tmp = z->ResumePoint;
-  z->ResumePoint = NULL;
-  goto *tmp;
+  const uint16_t id = z->resume_id;
+  z->resume_id = 0;
+  switch (id)
+  {
+#if SH7095_DEBUG_MODE
+   #include "sh7095s_ctable_dm.inc"
+#else
+   #include "sh7095s_ctable.inc"
+#endif
+   default: MDFN_UNREACHABLE;
+  }
  }
 
  do

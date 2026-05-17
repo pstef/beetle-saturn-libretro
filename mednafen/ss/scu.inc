@@ -101,6 +101,15 @@ enum { DMA_UpdateTimingGran = 127 };
 
 enum { DSP_UpdateTimingGran = 64 };	// Probably should keep it a multiple of 2.
 
+/* C-compat typedefs for the two DMA struct types defined below.
+ * In C the struct tag is not auto-aliased to a type name, so
+ * uses of `DMAWriteTabS` / `DMALevelS` without the `struct` keyword
+ * fail to parse.  Forward-declare both typedefs here so the
+ * struct bodies below and the function-level uses (`DMALevelS*
+ * d = &DMALevel[...]`) all resolve in either language. */
+typedef struct DMAWriteTabS DMAWriteTabS;
+typedef struct DMALevelS DMALevelS;
+
 struct DMAWriteTabS
 {
  int16_t write_addr_delta;
@@ -207,7 +216,7 @@ static INLINE bool CheckDoMasterInt(void)
    0x0
   };
 
-  static const uint8_t external_tab[16 + 1]
+  static const uint8_t external_tab[16 + 1] =
   {
    0x7, 0x7, 0x7, 0x7, 0x4, 0x4, 0x4, 0x4,
    0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1, 0x1,
@@ -390,10 +399,11 @@ void SCU_AdjustTS(const int32_t delta)
 {
  SCU_DMA_TimeCounter += delta;
  SCU_DMA_RunUntil += delta;
- for(auto& d : DMALevel)
+ for(unsigned level___ = 0; level___ < 3; level___++)
  {
-  if(d.Active < 0)
-   d.FinishTime += delta;
+  DMALevelS* d = &DMALevel[level___];
+  if(d->Active < 0)
+   d->FinishTime += delta;
  }
 
  //
@@ -425,10 +435,6 @@ void SCU_AdjustTS(const int32_t delta)
 /* === SCU_RegRW_DB variants (3 T x 2 IsWrite) === */
 static INLINE void SCU_RegRW_DB_u8_W0(uint32_t A, uint32_t* DB)
 {
- unsigned mask;
-
-  mask = 0xFF << (((A & 3) ^ 3) << 3); 
-
   switch(A & 0xFC)
   {
    default:
@@ -457,9 +463,9 @@ static INLINE void SCU_RegRW_DB_u8_W0(uint32_t A, uint32_t* DB)
    case 0x20:
    case 0x40:
 	{
-	 auto const& d = DMALevel[(A >> 5) & 0x3];
+	 const DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 *DB = d.StartReadAddr;
+	 *DB = d->StartReadAddr;
 	}
 	break;
 
@@ -467,9 +473,9 @@ static INLINE void SCU_RegRW_DB_u8_W0(uint32_t A, uint32_t* DB)
    case 0x24:
    case 0x44:
 	{
-	 auto const& d = DMALevel[(A >> 5) & 0x3];
+	 const DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 *DB = d.StartWriteAddr;
+	 *DB = d->StartWriteAddr;
 	}
 	break;
 
@@ -479,9 +485,9 @@ static INLINE void SCU_RegRW_DB_u8_W0(uint32_t A, uint32_t* DB)
 
 	 for(unsigned level = 0; level < 3; level++)
 	 {
-	  auto& d = DMALevel[level];
+	  DMALevelS* d = &DMALevel[level];
 
-	  if(d.Active)
+	  if(d->Active)
 	  {
 	   tmp |= 0x10 << (level << 2);
 	  }
@@ -520,7 +526,7 @@ static INLINE void SCU_RegRW_DB_u8_W0(uint32_t A, uint32_t* DB)
 
    case 0x8C:
 	if(!DSPS_IsRunning(&DSP))
-	 *DB = MDAP(DSP.DataRAM)[DSP.RA++];
+	 *DB = ((uint32_t*)DSP.DataRAM)[DSP.RA++];
 	else
 	 *DB = 0xFFFFFFFF;
 	break;
@@ -618,9 +624,9 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
    case 0x20:
    case 0x40:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 d.StartReadAddr = (d.StartReadAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
+	 d->StartReadAddr = (d->StartReadAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
 	}
 	break;
 
@@ -628,9 +634,9 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
    case 0x24:
    case 0x44:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 d.StartWriteAddr = (d.StartWriteAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
+	 d->StartWriteAddr = (d->StartWriteAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
 	}
 	break;
 
@@ -639,9 +645,9 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
    case 0x48:
 	{
 	 const unsigned level = (A >> 5) & 0x3;
-	 auto& d = DMALevel[level];
+	 DMALevelS* d = &DMALevel[level];
 
-	 d.StartByteCount = (d.StartByteCount &~ mask) | (*DB & mask & (level ? 0x00000FFF : 0x000FFFFF));
+	 d->StartByteCount = (d->StartByteCount &~ mask) | (*DB & mask & (level ? 0x00000FFF : 0x000FFFFF));
         }
 	break;
 
@@ -649,13 +655,13 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
    case 0x2C:
    case 0x4C:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
-	 uint32_t tmp = (d.ReadAdd << 8) | (d.WriteAdd << 0);
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
+	 uint32_t tmp = (d->ReadAdd << 8) | (d->WriteAdd << 0);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);
 
-	 d.ReadAdd = (tmp >> 8) & 0x1;
-	 d.WriteAdd = (tmp >> 0) & 0x7;
+	 d->ReadAdd = (tmp >> 8) & 0x1;
+	 d->WriteAdd = (tmp >> 0) & 0x7;
 	}
 	break;
 
@@ -664,18 +670,18 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
    case 0x50:
 	{
 	 const unsigned level = (A >> 5) & 0x3;
-	 auto& d = DMALevel[level];
-	 uint32_t tmp = (d.Enable << 8);
+	 DMALevelS* d = &DMALevel[level];
+	 uint32_t tmp = (d->Enable << 8);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);	 
-	 d.Enable = (tmp >> 8) & 0x1;
+	 d->Enable = (tmp >> 8) & 0x1;
 
-	 if((tmp & 0x1) && d.Enable && d.SF == 0x7)
+	 if((tmp & 0x1) && d->Enable && d->SF == 0x7)
 	 {
 	  SCU_UpdateDMA(SH7095_mem_timestamp);
 
-	  d.GoGoGadget = true;
-	  CheckDMAStart(&d);
+	  d->GoGoGadget = true;
+	  CheckDMAStart(d);
 
 	  SS_SetEventNT(&events[SS_EVENT_SCU_DMA], SCU_UpdateDMA(SH7095_mem_timestamp));
 	 }
@@ -686,15 +692,15 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
    case 0x34:
    case 0x54:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
-	 uint32_t tmp = (d.Indirect << 24) | (d.ReadUpdate << 16) | (d.WriteUpdate << 8) | (d.SF << 0);
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
+	 uint32_t tmp = (d->Indirect << 24) | (d->ReadUpdate << 16) | (d->WriteUpdate << 8) | (d->SF << 0);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);
 
-	 d.Indirect = (tmp >> 24) & 0x1;
-	 d.ReadUpdate = (tmp >> 16) & 0x1;
-	 d.WriteUpdate = (tmp >> 8) & 0x1;
-	 d.SF = (tmp >> 0) & 0x7;
+	 d->Indirect = (tmp >> 24) & 0x1;
+	 d->ReadUpdate = (tmp >> 16) & 0x1;
+	 d->WriteUpdate = (tmp >> 8) & 0x1;
+	 d->SF = (tmp >> 0) & 0x7;
 	}
 	break;
 
@@ -705,10 +711,10 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
 	 SCU_DMA_ReadOverhead = 0;
 	 for(unsigned level = 0; level < 3; level++)
 	 {
-	  auto& d = DMALevel[level];
+	  DMALevelS* d = &DMALevel[level];
 
-	  d.Active = false;
-	  d.GoGoGadget = false;
+	  d->Active = false;
+	  d->GoGoGadget = false;
 	 }
 	 RecalcDMAHalt();
 	}
@@ -743,7 +749,12 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
 	 {
 	  if(DSP.State == 0)
 	  {
-	   ((void (*)(DSPS*))(DSP_INSTR_BASE_UIPT + (uintptr_t)(DSP_INSTR_RECOVER_TCAST)DSP.NextInstr))(&DSP);
+#ifdef WANT_JIT
+	   if(MDFN_LIKELY(setting_jit_scu && SCU_DSP_JIT_Entry != NULL))
+	    SCU_DSP_JIT_Entry(&DSP);
+	   else
+#endif
+	    ((void (*)(DSPS*))(DSP_INSTR_BASE_UIPT + (uintptr_t)(DSP_INSTR_RECOVER_TCAST)DSP.NextInstr))(&DSP);
 	   if(DSP.CycleCounter < -(DSP_EndCCSubVal / 2))	// Ugh
 	    DSP.CycleCounter += DSP_EndCCSubVal;
 	  }
@@ -762,7 +773,10 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
 
    case 0x84:
 	if(!DSPS_IsRunning(&DSP))
-	 DSP.ProgRAM[DSP.PC++] = DSP_DecodeInstruction(*DB, false);
+	{
+	 const uint8_t slot = DSP.PC++;
+	 DSP.ProgRAM[slot] = DSP_DecodeSlotInstruction(slot, *DB, false);
+	}
 	break;
 
    case 0x88:
@@ -771,7 +785,7 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
 
    case 0x8C:
 	if(!DSPS_IsRunning(&DSP))
-	 MDAP(DSP.DataRAM)[DSP.RA++] = *DB;
+	 ((uint32_t*)DSP.DataRAM)[DSP.RA++] = *DB;
 	break;
   }
  
@@ -779,10 +793,6 @@ static INLINE void SCU_RegRW_DB_u8_W1(uint32_t A, uint32_t* DB)
 
 static INLINE void SCU_RegRW_DB_u16_W0(uint32_t A, uint32_t* DB)
 {
- unsigned mask;
-
-  mask = 0xFFFF << (((A & 2) ^ 2) << 3); 
-
   switch(A & 0xFC)
   {
    default:
@@ -811,9 +821,9 @@ static INLINE void SCU_RegRW_DB_u16_W0(uint32_t A, uint32_t* DB)
    case 0x20:
    case 0x40:
 	{
-	 auto const& d = DMALevel[(A >> 5) & 0x3];
+	 const DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 *DB = d.StartReadAddr;
+	 *DB = d->StartReadAddr;
 	}
 	break;
 
@@ -821,9 +831,9 @@ static INLINE void SCU_RegRW_DB_u16_W0(uint32_t A, uint32_t* DB)
    case 0x24:
    case 0x44:
 	{
-	 auto const& d = DMALevel[(A >> 5) & 0x3];
+	 const DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 *DB = d.StartWriteAddr;
+	 *DB = d->StartWriteAddr;
 	}
 	break;
 
@@ -833,9 +843,9 @@ static INLINE void SCU_RegRW_DB_u16_W0(uint32_t A, uint32_t* DB)
 
 	 for(unsigned level = 0; level < 3; level++)
 	 {
-	  auto& d = DMALevel[level];
+	  DMALevelS* d = &DMALevel[level];
 
-	  if(d.Active)
+	  if(d->Active)
 	  {
 	   tmp |= 0x10 << (level << 2);
 	  }
@@ -874,7 +884,7 @@ static INLINE void SCU_RegRW_DB_u16_W0(uint32_t A, uint32_t* DB)
 
    case 0x8C:
 	if(!DSPS_IsRunning(&DSP))
-	 *DB = MDAP(DSP.DataRAM)[DSP.RA++];
+	 *DB = ((uint32_t*)DSP.DataRAM)[DSP.RA++];
 	else
 	 *DB = 0xFFFFFFFF;
 	break;
@@ -972,9 +982,9 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
    case 0x20:
    case 0x40:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 d.StartReadAddr = (d.StartReadAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
+	 d->StartReadAddr = (d->StartReadAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
 	}
 	break;
 
@@ -982,9 +992,9 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
    case 0x24:
    case 0x44:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 d.StartWriteAddr = (d.StartWriteAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
+	 d->StartWriteAddr = (d->StartWriteAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
 	}
 	break;
 
@@ -993,9 +1003,9 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
    case 0x48:
 	{
 	 const unsigned level = (A >> 5) & 0x3;
-	 auto& d = DMALevel[level];
+	 DMALevelS* d = &DMALevel[level];
 
-	 d.StartByteCount = (d.StartByteCount &~ mask) | (*DB & mask & (level ? 0x00000FFF : 0x000FFFFF));
+	 d->StartByteCount = (d->StartByteCount &~ mask) | (*DB & mask & (level ? 0x00000FFF : 0x000FFFFF));
         }
 	break;
 
@@ -1003,13 +1013,13 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
    case 0x2C:
    case 0x4C:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
-	 uint32_t tmp = (d.ReadAdd << 8) | (d.WriteAdd << 0);
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
+	 uint32_t tmp = (d->ReadAdd << 8) | (d->WriteAdd << 0);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);
 
-	 d.ReadAdd = (tmp >> 8) & 0x1;
-	 d.WriteAdd = (tmp >> 0) & 0x7;
+	 d->ReadAdd = (tmp >> 8) & 0x1;
+	 d->WriteAdd = (tmp >> 0) & 0x7;
 	}
 	break;
 
@@ -1018,18 +1028,18 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
    case 0x50:
 	{
 	 const unsigned level = (A >> 5) & 0x3;
-	 auto& d = DMALevel[level];
-	 uint32_t tmp = (d.Enable << 8);
+	 DMALevelS* d = &DMALevel[level];
+	 uint32_t tmp = (d->Enable << 8);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);	 
-	 d.Enable = (tmp >> 8) & 0x1;
+	 d->Enable = (tmp >> 8) & 0x1;
 
-	 if((tmp & 0x1) && d.Enable && d.SF == 0x7)
+	 if((tmp & 0x1) && d->Enable && d->SF == 0x7)
 	 {
 	  SCU_UpdateDMA(SH7095_mem_timestamp);
 
-	  d.GoGoGadget = true;
-	  CheckDMAStart(&d);
+	  d->GoGoGadget = true;
+	  CheckDMAStart(d);
 
 	  SS_SetEventNT(&events[SS_EVENT_SCU_DMA], SCU_UpdateDMA(SH7095_mem_timestamp));
 	 }
@@ -1040,15 +1050,15 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
    case 0x34:
    case 0x54:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
-	 uint32_t tmp = (d.Indirect << 24) | (d.ReadUpdate << 16) | (d.WriteUpdate << 8) | (d.SF << 0);
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
+	 uint32_t tmp = (d->Indirect << 24) | (d->ReadUpdate << 16) | (d->WriteUpdate << 8) | (d->SF << 0);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);
 
-	 d.Indirect = (tmp >> 24) & 0x1;
-	 d.ReadUpdate = (tmp >> 16) & 0x1;
-	 d.WriteUpdate = (tmp >> 8) & 0x1;
-	 d.SF = (tmp >> 0) & 0x7;
+	 d->Indirect = (tmp >> 24) & 0x1;
+	 d->ReadUpdate = (tmp >> 16) & 0x1;
+	 d->WriteUpdate = (tmp >> 8) & 0x1;
+	 d->SF = (tmp >> 0) & 0x7;
 	}
 	break;
 
@@ -1059,10 +1069,10 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
 	 SCU_DMA_ReadOverhead = 0;
 	 for(unsigned level = 0; level < 3; level++)
 	 {
-	  auto& d = DMALevel[level];
+	  DMALevelS* d = &DMALevel[level];
 
-	  d.Active = false;
-	  d.GoGoGadget = false;
+	  d->Active = false;
+	  d->GoGoGadget = false;
 	 }
 	 RecalcDMAHalt();
 	}
@@ -1125,7 +1135,7 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
 
    case 0x8C:
 	if(!DSPS_IsRunning(&DSP))
-	 MDAP(DSP.DataRAM)[DSP.RA++] = *DB;
+	 ((uint32_t*)DSP.DataRAM)[DSP.RA++] = *DB;
 	break;
   }
  
@@ -1133,10 +1143,6 @@ static INLINE void SCU_RegRW_DB_u16_W1(uint32_t A, uint32_t* DB)
 
 static INLINE void SCU_RegRW_DB_u32_W0(uint32_t A, uint32_t* DB)
 {
- unsigned mask;
-
-  mask = 0xFFFFFFFF; 
-
   switch(A & 0xFC)
   {
    default:
@@ -1165,9 +1171,9 @@ static INLINE void SCU_RegRW_DB_u32_W0(uint32_t A, uint32_t* DB)
    case 0x20:
    case 0x40:
 	{
-	 auto const& d = DMALevel[(A >> 5) & 0x3];
+	 const DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 *DB = d.StartReadAddr;
+	 *DB = d->StartReadAddr;
 	}
 	break;
 
@@ -1175,9 +1181,9 @@ static INLINE void SCU_RegRW_DB_u32_W0(uint32_t A, uint32_t* DB)
    case 0x24:
    case 0x44:
 	{
-	 auto const& d = DMALevel[(A >> 5) & 0x3];
+	 const DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 *DB = d.StartWriteAddr;
+	 *DB = d->StartWriteAddr;
 	}
 	break;
 
@@ -1187,9 +1193,9 @@ static INLINE void SCU_RegRW_DB_u32_W0(uint32_t A, uint32_t* DB)
 
 	 for(unsigned level = 0; level < 3; level++)
 	 {
-	  auto& d = DMALevel[level];
+	  DMALevelS* d = &DMALevel[level];
 
-	  if(d.Active)
+	  if(d->Active)
 	  {
 	   tmp |= 0x10 << (level << 2);
 	  }
@@ -1228,7 +1234,7 @@ static INLINE void SCU_RegRW_DB_u32_W0(uint32_t A, uint32_t* DB)
 
    case 0x8C:
 	if(!DSPS_IsRunning(&DSP))
-	 *DB = MDAP(DSP.DataRAM)[DSP.RA++];
+	 *DB = ((uint32_t*)DSP.DataRAM)[DSP.RA++];
 	else
 	 *DB = 0xFFFFFFFF;
 	break;
@@ -1326,9 +1332,9 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
    case 0x20:
    case 0x40:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 d.StartReadAddr = (d.StartReadAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
+	 d->StartReadAddr = (d->StartReadAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
 	}
 	break;
 
@@ -1336,9 +1342,9 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
    case 0x24:
    case 0x44:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
 
-	 d.StartWriteAddr = (d.StartWriteAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
+	 d->StartWriteAddr = (d->StartWriteAddr &~ mask) | (*DB & mask & 0x07FFFFFF);
 	}
 	break;
 
@@ -1347,9 +1353,9 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
    case 0x48:
 	{
 	 const unsigned level = (A >> 5) & 0x3;
-	 auto& d = DMALevel[level];
+	 DMALevelS* d = &DMALevel[level];
 
-	 d.StartByteCount = (d.StartByteCount &~ mask) | (*DB & mask & (level ? 0x00000FFF : 0x000FFFFF));
+	 d->StartByteCount = (d->StartByteCount &~ mask) | (*DB & mask & (level ? 0x00000FFF : 0x000FFFFF));
         }
 	break;
 
@@ -1357,13 +1363,13 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
    case 0x2C:
    case 0x4C:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
-	 uint32_t tmp = (d.ReadAdd << 8) | (d.WriteAdd << 0);
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
+	 uint32_t tmp = (d->ReadAdd << 8) | (d->WriteAdd << 0);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);
 
-	 d.ReadAdd = (tmp >> 8) & 0x1;
-	 d.WriteAdd = (tmp >> 0) & 0x7;
+	 d->ReadAdd = (tmp >> 8) & 0x1;
+	 d->WriteAdd = (tmp >> 0) & 0x7;
 	}
 	break;
 
@@ -1372,18 +1378,18 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
    case 0x50:
 	{
 	 const unsigned level = (A >> 5) & 0x3;
-	 auto& d = DMALevel[level];
-	 uint32_t tmp = (d.Enable << 8);
+	 DMALevelS* d = &DMALevel[level];
+	 uint32_t tmp = (d->Enable << 8);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);	 
-	 d.Enable = (tmp >> 8) & 0x1;
+	 d->Enable = (tmp >> 8) & 0x1;
 
-	 if((tmp & 0x1) && d.Enable && d.SF == 0x7)
+	 if((tmp & 0x1) && d->Enable && d->SF == 0x7)
 	 {
 	  SCU_UpdateDMA(SH7095_mem_timestamp);
 
-	  d.GoGoGadget = true;
-	  CheckDMAStart(&d);
+	  d->GoGoGadget = true;
+	  CheckDMAStart(d);
 
 	  SS_SetEventNT(&events[SS_EVENT_SCU_DMA], SCU_UpdateDMA(SH7095_mem_timestamp));
 	 }
@@ -1394,15 +1400,15 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
    case 0x34:
    case 0x54:
 	{
-	 auto& d = DMALevel[(A >> 5) & 0x3];
-	 uint32_t tmp = (d.Indirect << 24) | (d.ReadUpdate << 16) | (d.WriteUpdate << 8) | (d.SF << 0);
+	 DMALevelS* d = &DMALevel[(A >> 5) & 0x3];
+	 uint32_t tmp = (d->Indirect << 24) | (d->ReadUpdate << 16) | (d->WriteUpdate << 8) | (d->SF << 0);
 
 	 tmp = (tmp &~ mask) | (*DB & mask);
 
-	 d.Indirect = (tmp >> 24) & 0x1;
-	 d.ReadUpdate = (tmp >> 16) & 0x1;
-	 d.WriteUpdate = (tmp >> 8) & 0x1;
-	 d.SF = (tmp >> 0) & 0x7;
+	 d->Indirect = (tmp >> 24) & 0x1;
+	 d->ReadUpdate = (tmp >> 16) & 0x1;
+	 d->WriteUpdate = (tmp >> 8) & 0x1;
+	 d->SF = (tmp >> 0) & 0x7;
 	}
 	break;
 
@@ -1413,10 +1419,10 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
 	 SCU_DMA_ReadOverhead = 0;
 	 for(unsigned level = 0; level < 3; level++)
 	 {
-	  auto& d = DMALevel[level];
+	  DMALevelS* d = &DMALevel[level];
 
-	  d.Active = false;
-	  d.GoGoGadget = false;
+	  d->Active = false;
+	  d->GoGoGadget = false;
 	 }
 	 RecalcDMAHalt();
 	}
@@ -1479,7 +1485,7 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
 
    case 0x8C:
 	if(!DSPS_IsRunning(&DSP))
-	 MDAP(DSP.DataRAM)[DSP.RA++] = *DB;
+	 ((uint32_t*)DSP.DataRAM)[DSP.RA++] = *DB;
 	break;
   }
  
@@ -1499,7 +1505,7 @@ static INLINE void SCU_RegRW_DB_u32_W1(uint32_t A, uint32_t* DB)
  * for its tuple -- no constexpr-shadow indirection. */
 
 /* === BBusRW_DB variants (6 used tuples) === */
-static INLINE void BBusRW_DB_u8_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void BBusRW_DB_u8_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  
 
@@ -1625,7 +1631,7 @@ static INLINE void BBusRW_DB_u8_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_t
 
 }
 
-static INLINE void BBusRW_DB_u16_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void BBusRW_DB_u16_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  
 
@@ -1751,7 +1757,7 @@ static INLINE void BBusRW_DB_u16_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_
 
 }
 
-static INLINE void BBusRW_DB_u16_W1_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void BBusRW_DB_u16_W1_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  
 
@@ -1872,7 +1878,7 @@ static INLINE void BBusRW_DB_u16_W1_SH1(uint32_t A, uint16_t* DB, int32_t* time_
 
 }
 
-static INLINE void BBusRW_DB_u32_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void BBusRW_DB_u32_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  
 
@@ -1998,7 +2004,7 @@ static INLINE void BBusRW_DB_u32_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_
 
 }
 
-static INLINE void BBusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void BBusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  
 
@@ -2107,7 +2113,7 @@ static INLINE void BBusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_
  *DB = 0;
 }
 
-static INLINE void BBusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void BBusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  
 
@@ -2216,7 +2222,7 @@ static INLINE void BBusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_
 
 
 /* === ABusRW_DB variants (5 used tuples) === */
-static INLINE void ABusRW_DB_u8_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void ABusRW_DB_u8_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  //
  // A-Bus CS0 and CS1
@@ -2317,7 +2323,7 @@ static INLINE void ABusRW_DB_u8_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_t
   *dma_time_thing -= 1;
 }
 
-static INLINE void ABusRW_DB_u16_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void ABusRW_DB_u16_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  //
  // A-Bus CS0 and CS1
@@ -2418,7 +2424,7 @@ static INLINE void ABusRW_DB_u16_W1_SH0(uint32_t A, uint16_t* DB, int32_t* time_
   *dma_time_thing -= 1;
 }
 
-static INLINE void ABusRW_DB_u16_W1_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void ABusRW_DB_u16_W1_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  //
  // A-Bus CS0 and CS1
@@ -2519,7 +2525,7 @@ static INLINE void ABusRW_DB_u16_W1_SH1(uint32_t A, uint16_t* DB, int32_t* time_
   *dma_time_thing -= 1;
 }
 
-static INLINE void ABusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void ABusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  //
  // A-Bus CS0 and CS1
@@ -2601,7 +2607,6 @@ static INLINE void ABusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_
   if((A & 0x7FFF) < 0x1000)
   {
    const uint32_t offset = (A & 0x3F) >> 2;
-   const uint32_t mask = (true) ? 0xFFFF : (0xFF << (((A & 1) ^ 1) << 3));
 
     if(true || !(A & 0x80000)) // CD block seems to effectively ignore second read access in 32-bit reads somehow, tested to occur HIRQ and the FIFO at least...
      *DB = CDB_Read(offset);
@@ -2621,7 +2626,7 @@ static INLINE void ABusRW_DB_u16_W0_SH0(uint32_t A, uint16_t* DB, int32_t* time_
   *dma_time_thing -= 1;
 }
 
-static INLINE void ABusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)	// add to time_thing, subtract from dma_time_thing
+static INLINE void ABusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)	// add to time_thing, subtract from dma_time_thing
 {
  //
  // A-Bus CS0 and CS1
@@ -2703,7 +2708,6 @@ static INLINE void ABusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_
   if((A & 0x7FFF) < 0x1000)
   {
    const uint32_t offset = (A & 0x3F) >> 2;
-   const uint32_t mask = (true) ? 0xFFFF : (0xFF << (((A & 1) ^ 1) << 3));
 
     if(false || !(A & 0x80000)) // CD block seems to effectively ignore second read access in 32-bit reads somehow, tested to occur HIRQ and the FIFO at least...
      *DB = CDB_Read(offset);
@@ -2743,21 +2747,21 @@ static INLINE void ABusRW_DB_u16_W0_SH1(uint32_t A, uint16_t* DB, int32_t* time_
  * the u8/u16 bodies are now concrete-T template
  * instantiations (uint8_t / uint16_t respectively).
  */
-static INLINE void ABus_Write_DB32_u8(uint32_t A, uint32_t DB32, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)
+static INLINE void ABus_Write_DB32_u8(uint32_t A, uint32_t DB32, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)
 {
  uint16_t tmp = DB32 >> (((A & 2) ^ 2) << 3);
 
  ABusRW_DB_u8_W1_SH0(A, &tmp, time_thing, dma_time_thing, sh2_dma_time_thing);
 }
 
-static INLINE void ABus_Write_DB32_u16(uint32_t A, uint32_t DB32, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)
+static INLINE void ABus_Write_DB32_u16(uint32_t A, uint32_t DB32, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)
 {
  uint16_t tmp = DB32 >> (((A & 2) ^ 2) << 3);
 
  ABusRW_DB_u16_W1_SH0(A, &tmp, time_thing, dma_time_thing, sh2_dma_time_thing);
 }
 
-static INLINE void ABus_Write_DB32_u32(uint32_t A, uint32_t DB32, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)
+static INLINE void ABus_Write_DB32_u32(uint32_t A, uint32_t DB32, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)
 {
  uint16_t tmp;
 
@@ -2769,7 +2773,7 @@ static INLINE void ABus_Write_DB32_u32(uint32_t A, uint32_t DB32, int32_t* time_
 }
 
 // Lower 2 bits of A should be 0
-static INLINE uint32_t ABus_Read(uint32_t A, int32_t* time_thing, int32_t* dma_time_thing = NULL, int32_t* sh2_dma_time_thing = NULL)
+static INLINE uint32_t ABus_Read(uint32_t A, int32_t* time_thing, int32_t* dma_time_thing, int32_t* sh2_dma_time_thing)
 {
  uint32_t ret;
  uint16_t tmp = 0xFFFF;
@@ -3198,7 +3202,7 @@ static INLINE void SCU_FromSH2_BusRW_DB_u32_W1(uint32_t A, uint32_t* DB, int32_t
 //
 static uint32_t DMA_ReadABus(uint32_t offset)
 {
- return ABus_Read(offset, NULL, &SCU_DMA_ReadOverhead);
+ return ABus_Read(offset, NULL, &SCU_DMA_ReadOverhead, NULL);
 }
 
 static uint32_t DMA_ReadBBus(uint32_t offset)
@@ -3206,10 +3210,10 @@ static uint32_t DMA_ReadBBus(uint32_t offset)
  uint32_t ret;
  uint16_t tmp = 0;
 
- BBusRW_DB_u16_W0_SH0(offset | 0, &tmp, NULL, &SCU_DMA_ReadOverhead);
+ BBusRW_DB_u16_W0_SH0(offset | 0, &tmp, NULL, &SCU_DMA_ReadOverhead, NULL);
  ret = tmp << 16;
 
- BBusRW_DB_u16_W0_SH1(offset | 2, &tmp, NULL, &SCU_DMA_ReadOverhead);
+ BBusRW_DB_u16_W0_SH1(offset | 2, &tmp, NULL, &SCU_DMA_ReadOverhead, NULL);
  ret |= tmp << 0;
 
  return ret;
@@ -3408,12 +3412,12 @@ static void CheckDMASFByInt(unsigned int_which)
 
  for(unsigned level = 0; level < 3; level++)
  {
-  auto& d = DMALevel[level];
+  DMALevelS* d = &DMALevel[level];
 
-  if(d.Enable && d.SF < 0x7 && sf_to_int_tab[d.SF] == int_which)
+  if(d->Enable && d->SF < 0x7 && sf_to_int_tab[d->SF] == int_which)
   {
-   d.GoGoGadget = true;
-   CheckDMAStart(&d);
+   d->GoGoGadget = true;
+   CheckDMAStart(d);
   }
  }
 }
@@ -3518,7 +3522,7 @@ static INLINE void DMA_Write_WB0_u8(DMALevelS* d, uint32_t DB)
  int32_t WriteOverhead = 0;
 
   /* Phase-8k: sizeof(T) folds at template-instantiation time. */
-  ABus_Write_DB32_u8 (A, DB, NULL, &WriteOverhead);
+  ABus_Write_DB32_u8 (A, DB, NULL, &WriteOverhead, NULL);
 
  SCU_DMA_TimeCounter -= WriteOverhead;
  SCU_DMA_ReadOverhead = ((int32_t)(0) < (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead) ? (int32_t)(0) : (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead));
@@ -3531,7 +3535,7 @@ static INLINE void DMA_Write_WB0_u16(DMALevelS* d, uint32_t DB)
  int32_t WriteOverhead = 0;
 
   /* Phase-8k: sizeof(T) folds at template-instantiation time. */
-  ABus_Write_DB32_u16(A, DB, NULL, &WriteOverhead);
+  ABus_Write_DB32_u16(A, DB, NULL, &WriteOverhead, NULL);
 
  SCU_DMA_TimeCounter -= WriteOverhead;
  SCU_DMA_ReadOverhead = ((int32_t)(0) < (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead) ? (int32_t)(0) : (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead));
@@ -3544,7 +3548,7 @@ static INLINE void DMA_Write_WB0_u32(DMALevelS* d, uint32_t DB)
  int32_t WriteOverhead = 0;
 
   /* Phase-8k: sizeof(T) folds at template-instantiation time. */
-  ABus_Write_DB32_u32(A, DB, NULL, &WriteOverhead);
+  ABus_Write_DB32_u32(A, DB, NULL, &WriteOverhead, NULL);
 
  SCU_DMA_TimeCounter -= WriteOverhead;
  SCU_DMA_ReadOverhead = ((int32_t)(0) < (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead) ? (int32_t)(0) : (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead));
@@ -3560,7 +3564,7 @@ static INLINE void DMA_Write_WB1_u8(DMALevelS* d, uint32_t DB)
 
   DB16 = DB >> (((A & 0x2) ^ 0x2) * 8);
   /* Phase-8q1: sizeof(T) folds at DMA_Write template instantiation. */
-  BBusRW_DB_u8_W1_SH0 (A, &DB16, NULL, &WriteOverhead);
+  BBusRW_DB_u8_W1_SH0 (A, &DB16, NULL, &WriteOverhead, NULL);
 
  SCU_DMA_TimeCounter -= WriteOverhead;
  SCU_DMA_ReadOverhead = ((int32_t)(0) < (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead) ? (int32_t)(0) : (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead));
@@ -3576,7 +3580,7 @@ static INLINE void DMA_Write_WB1_u16(DMALevelS* d, uint32_t DB)
 
   DB16 = DB >> (((A & 0x2) ^ 0x2) * 8);
   /* Phase-8q1: sizeof(T) folds at DMA_Write template instantiation. */
-  BBusRW_DB_u16_W1_SH0(A, &DB16, NULL, &WriteOverhead);
+  BBusRW_DB_u16_W1_SH0(A, &DB16, NULL, &WriteOverhead, NULL);
 
  SCU_DMA_TimeCounter -= WriteOverhead;
  SCU_DMA_ReadOverhead = ((int32_t)(0) < (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead) ? (int32_t)(0) : (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead));
@@ -3592,7 +3596,7 @@ static INLINE void DMA_Write_WB1_u32(DMALevelS* d, uint32_t DB)
 
   DB16 = DB >> (((A & 0x2) ^ 0x2) * 8);
   /* Phase-8q1: sizeof(T) folds at DMA_Write template instantiation. */
-  BBusRW_DB_u32_W1_SH0(A, &DB16, NULL, &WriteOverhead);
+  BBusRW_DB_u32_W1_SH0(A, &DB16, NULL, &WriteOverhead, NULL);
 
  SCU_DMA_TimeCounter -= WriteOverhead;
  SCU_DMA_ReadOverhead = ((int32_t)(0) < (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead) ? (int32_t)(0) : (int32_t)(SCU_DMA_ReadOverhead - WriteOverhead));
@@ -3861,10 +3865,16 @@ static INLINE void CheckForceDMAFinish(void)
  * (extern "C" wrapped on the C++ side, plain decl on the C side),
  * defined here in ss.cpp's TU.  `extern "C"` on the definition
  * forces the unmangled symbol so the scu_dsp_*.c files link
- * against the same `DSP` global. */
+ * against the same `DSP` global.  Gated for C compilation: in C
+ * the linkage is already C (no mangling), so the `extern "C"`
+ * wrapper is C++-only syntax to suppress -- not semantics. */
+#ifdef __cplusplus
 extern "C" {
+#endif
 struct DSPS DSP;
+#ifdef __cplusplus
 }
+#endif
 
 sscpu_timestamp_t SCU_UpdateDSP(sscpu_timestamp_t timestamp)
 {
@@ -3887,7 +3897,14 @@ sscpu_timestamp_t SCU_UpdateDSP(sscpu_timestamp_t timestamp)
   // remaining cycles via DSP_TailDispatch and only returns once the
   // budget is exhausted (or the DSP stopped).
   if(MDFN_LIKELY(dsp->CycleCounter > 0))
-   ((void (*)(DSPS*))(DSP_INSTR_BASE_UIPT + (uintptr_t)(DSP_INSTR_RECOVER_TCAST)dsp->NextInstr))(dsp);
+  {
+#ifdef WANT_JIT
+   if(MDFN_LIKELY(setting_jit_scu && SCU_DSP_JIT_Entry != NULL))
+    SCU_DSP_JIT_Entry(dsp);
+   else
+#endif
+    ((void (*)(DSPS*))(DSP_INSTR_BASE_UIPT + (uintptr_t)(DSP_INSTR_RECOVER_TCAST)dsp->NextInstr))(dsp);
+  }
  }
 
  if(MDFN_UNLIKELY(!DSPS_IsRunning(&DSP)))
@@ -3907,11 +3924,15 @@ static void DSP_Reset(bool powering_up)
 
  if(powering_up)
  {
+#ifdef WANT_JIT
+  if(setting_jit_scu)
+   SCU_DSP_JIT_Reset();
+#endif
   for(unsigned i = 0; i < 256; i++)
-   DSP.ProgRAM[i] = DSP_DecodeInstruction(0, false);
+   DSP.ProgRAM[i] = DSP_DecodeSlotInstruction(i, 0, false);
 
   for(unsigned i = 0; i < 256; i++)
-   MDAP(DSP.DataRAM)[i] = 0;
+   ((uint32_t*)DSP.DataRAM)[i] = 0;
  }
 
  DSP.PC = 0;
@@ -3951,11 +3972,17 @@ static void DSP_Reset(bool powering_up)
  * the same names.  DSP_Init's address is also used as the base
  * pointer for the DSP_INSTR_BASE_UIPT macro on 64-bit hosts, so
  * the same symbol address must be visible to both compilers. */
+#ifdef __cplusplus
 extern "C" {
+#endif
 
 MDFN_COLD void DSP_Init(void)
 {
  DSP.LastTS = 0;
+#ifdef WANT_JIT
+ if(setting_jit_scu)
+  SCU_DSP_JIT_Init();
+#endif
 }
 
 void DSP_FinishPRAMDMA(void)
@@ -3965,7 +3992,10 @@ void DSP_FinishPRAMDMA(void)
  DSP.T0_Until = DSP.CycleCounter;
 
  for(uint32_t i = 0; i < DSP.PRAMDMABufCount; i++)
-  DSP.ProgRAM[DSP.PC++] = DSP_DecodeInstruction(DSP.PRAMDMABuf[i & 0xFF], false);
+ {
+  const uint8_t slot = DSP.PC++;
+  DSP.ProgRAM[slot] = DSP_DecodeSlotInstruction(slot, DSP.PRAMDMABuf[i & 0xFF], false);
+ }
 
  DSP.PRAMDMABufCount = 0;
  //
@@ -3973,7 +4003,9 @@ void DSP_FinishPRAMDMA(void)
  DSP.NextInstr = DSP_DecodeInstruction(0, false);
 }
 
+#ifdef __cplusplus
 } /* extern "C" */
+#endif
 
 /* Phase-5d: was `template<bool looped, bool hold, bool format, bool dir,
  * unsigned drw> static NO_INLINE NO_CLONE void DMAInstr(DSPS* dsp)` --
@@ -4091,18 +4123,18 @@ void DSP_FinishPRAMDMA(void)
     uint16_t DB16;                                                                                 \
                                                                                                    \
     DB16 = DB >> 16;                                                                               \
-    BBusRW_DB_u16_W1_SH0(addr, &DB16, NULL, &dsp->T0_Until);                                  \
+    BBusRW_DB_u16_W1_SH0(addr, &DB16, NULL, &dsp->T0_Until, NULL);                                  \
                                                                                                    \
     addr += addr_add_amount;                                                                       \
                                                                                                    \
     DB16 = DB;                                                                                     \
-    BBusRW_DB_u16_W1_SH1(addr, &DB16, NULL, &dsp->T0_Until);                            \
+    BBusRW_DB_u16_W1_SH1(addr, &DB16, NULL, &dsp->T0_Until, NULL);                            \
                                                                                                    \
     addr += addr_add_amount;                                                                       \
    }                                                                                               \
    else if(WriteBus == 0)                                                                          \
    {                                                                                               \
-    ABus_Write_DB32_u32(addr, DB, NULL, &dsp->T0_Until);                                     \
+    ABus_Write_DB32_u32(addr, DB, NULL, &dsp->T0_Until, NULL);                                     \
                                                                                                    \
     addr += addr_add_amount;                                                                       \
    }                                                                                               \
@@ -4142,17 +4174,17 @@ void DSP_FinishPRAMDMA(void)
    {                                                                                               \
     uint16_t tmp = 0;                                                                              \
                                                                                                    \
-    BBusRW_DB_u16_W0_SH0(addr | 0, &tmp, NULL, &dsp->T0_Until);                              \
+    BBusRW_DB_u16_W0_SH0(addr | 0, &tmp, NULL, &dsp->T0_Until, NULL);                              \
     DB = tmp << 16;                                                                                \
                                                                                                    \
-    BBusRW_DB_u16_W0_SH1(addr | 2, &tmp, NULL, &dsp->T0_Until);                        \
+    BBusRW_DB_u16_W0_SH1(addr | 2, &tmp, NULL, &dsp->T0_Until, NULL);                        \
     DB |= tmp << 0;                                                                                \
                                                                                                    \
     addr += 4;                                                                                     \
    }                                                                                               \
    else if(ReadBus == 0)                                                                           \
    {                                                                                               \
-    DB = ABus_Read(addr, NULL, &dsp->T0_Until);                                                    \
+    DB = ABus_Read(addr, NULL, &dsp->T0_Until, NULL);                                                    \
                                                                                                    \
     addr += addr_add_amount;                                                                       \
    }                                                                                               \
@@ -4214,12 +4246,16 @@ DDMA_FOR_EACH_HOLD(DEFINE_DMAInstr, 1)
 /* Phase-5e: extern "C" so the table-symbol name matches the unmangled
  * scu_dsp_common.inc declaration that the C-side scu_dsp_misc.c sees
  * (DSP_DecodeInstruction inlines a read of this table in the LPS path). */
+#ifdef __cplusplus
 extern "C" {
-MDFN_HIDE extern void (*const DSP_DMAFuncTable[2][8][8])(struct DSPS*) =
+#endif
+MDFN_HIDE void (*const DSP_DMAFuncTable[2][8][8])(struct DSPS*) =
 {
  #include "scu_dsp_dmatab.inc"
 };
+#ifdef __cplusplus
 } /* extern "C" */
+#endif
 
 #undef DMAInstr_NAME
 #undef DMAInstr_BODY
@@ -4273,23 +4309,24 @@ void SCU_Reset(bool powering_up)
  if(powering_up)
   memset(DMALevel, 0x00, sizeof(DMALevel));
 
- for(auto& d : DMALevel)
+ for(unsigned level___ = 0; level___ < 3; level___++)
  {
-  d.ReadAdd = true;
-  d.WriteAdd = 0x1;
+  DMALevelS* d = &DMALevel[level___];
+  d->ReadAdd = true;
+  d->WriteAdd = 0x1;
 
-  d.Enable = false;
-  d.GoGoGadget = false;
-  d.Active = false;
+  d->Enable = false;
+  d->GoGoGadget = false;
+  d->Active = false;
 
-  d.Indirect = false;
-  d.ReadUpdate = false;
-  d.WriteUpdate = false;
-  d.SF = 0x7;
+  d->Indirect = false;
+  d->ReadUpdate = false;
+  d->WriteUpdate = false;
+  d->SF = 0x7;
 
-  d.WATable = &dma_write_tab.acb[0][0][0][0][0];
-  d.ReadFunc = rftab[0];
-  d.TableReadFunc = NULL;
+  d->WATable = &dma_write_tab.acb[0][0][0][0][0];
+  d->ReadFunc = rftab[0];
+  d->TableReadFunc = NULL;
  }
  //SCU_DMA_CycleCounter = 0;
  SCU_DMA_ReadOverhead = 0;
@@ -4435,12 +4472,12 @@ MDFN_COLD void SCU_StateAction(StateMem* sm, const unsigned load, const bool dat
 
  for(unsigned level = 0; level < 3; level++)
  {
-  const auto& d = DMALevel[level];
+  const DMALevelS* d = &DMALevel[level];
 
-  if(d.WATable >= dwt_ptrs[0] && d.WATable < (dwt_ptrs[0] + dwt_counts[0]))
-   DMALevel_WATable[level] = d.WATable - dwt_ptrs[0];
-  else if(d.WATable >= dwt_ptrs[1] && d.WATable < (dwt_ptrs[1] + dwt_counts[1]))
-   DMALevel_WATable[level] = 0x80000000 | (d.WATable - dwt_ptrs[1]);
+  if(d->WATable >= dwt_ptrs[0] && d->WATable < (dwt_ptrs[0] + dwt_counts[0]))
+   DMALevel_WATable[level] = d->WATable - dwt_ptrs[0];
+  else if(d->WATable >= dwt_ptrs[1] && d->WATable < (dwt_ptrs[1] + dwt_counts[1]))
+   DMALevel_WATable[level] = 0x80000000 | (d->WATable - dwt_ptrs[1]);
   else
    abort();	// FIXME: NULL pointer on init...
 
@@ -4449,7 +4486,7 @@ MDFN_COLD void SCU_StateAction(StateMem* sm, const unsigned load, const bool dat
    if(rb >= 3)
     abort();
 
-   if(d.ReadFunc == rftab[rb])
+   if(d->ReadFunc == rftab[rb])
    {
     DMALevel_ReadFunc[level] = rb;
     break;
@@ -4459,7 +4496,7 @@ MDFN_COLD void SCU_StateAction(StateMem* sm, const unsigned load, const bool dat
   DMALevel_TableReadFunc[level] = 0xFF;
   for(unsigned trb = 0; trb < 3; trb++)
   {
-   if(d.TableReadFunc == rftab[trb])
+   if(d->TableReadFunc == rftab[trb])
    {
     DMALevel_TableReadFunc[level] = trb;
     break;
@@ -4485,8 +4522,12 @@ MDFN_COLD void SCU_StateAction(StateMem* sm, const unsigned load, const bool dat
   ILevel &= 0xF;
   //
   //
+#ifdef WANT_JIT
+  if(setting_jit_scu)
+   SCU_DSP_JIT_Reset();
+#endif
   for(unsigned i = 0; i < 256; i++)
-   DSP.ProgRAM[i] = DSP_DecodeInstruction(DSP_ProgRAM[i], false);
+   DSP.ProgRAM[i] = DSP_DecodeSlotInstruction(i, DSP_ProgRAM[i], false);
 
   if(DSP_NextInstrLooped)
    DSP.NextInstr = DSP_DecodeInstruction(DSP_NextInstr, true);
@@ -4507,16 +4548,16 @@ MDFN_COLD void SCU_StateAction(StateMem* sm, const unsigned load, const bool dat
   //
   for(unsigned level = 0; level < 3; level++)
   {
-   auto& d = DMALevel[level];
+   DMALevelS* d = &DMALevel[level];
 
-   d.StartReadAddr &= 0x07FFFFFF;
-   d.StartWriteAddr &= 0x07FFFFFF;
-   d.StartByteCount &= level ? 0x00000FFF : 0x000FFFFF;
+   d->StartReadAddr &= 0x07FFFFFF;
+   d->StartWriteAddr &= 0x07FFFFFF;
+   d->StartByteCount &= level ? 0x00000FFF : 0x000FFFFF;
 
-   d.ReadAdd &= 0x1;
-   d.WriteAdd &= 0x7;
+   d->ReadAdd &= 0x1;
+   d->WriteAdd &= 0x7;
 
-   d.WriteBus %= 3;
+   d->WriteBus %= 3;
    //
    //
    {
@@ -4524,16 +4565,16 @@ MDFN_COLD void SCU_StateAction(StateMem* sm, const unsigned load, const bool dat
     uint32_t index = DMALevel_WATable[level] & 0x7FFFFFFF;
 
     if(index < dwt_counts[which]) // || !dwt_ptrs[which][index].write_size)
-     d.WATable = dwt_ptrs[which] + index;
+     d->WATable = dwt_ptrs[which] + index;
    }
 
    if(DMALevel_ReadFunc[level] < 3)
-    d.ReadFunc = rftab[DMALevel_ReadFunc[level]];
+    d->ReadFunc = rftab[DMALevel_ReadFunc[level]];
 
    if(DMALevel_TableReadFunc[level] == 0xFF)
-    d.TableReadFunc = NULL;
+    d->TableReadFunc = NULL;
    else if(DMALevel_TableReadFunc[level] < 3)
-    d.TableReadFunc = rftab[DMALevel_TableReadFunc[level]];
+    d->TableReadFunc = rftab[DMALevel_TableReadFunc[level]];
   }
   //
   //
@@ -4589,9 +4630,9 @@ uint32_t SCU_GetRegister(const unsigned id, char* const special, const uint32_t 
   case SCU_GSREG_D1MD:
   case SCU_GSREG_D2MD:
 	{
-	 auto& d = DMALevel[id - SCU_GSREG_D0MD];
+	 DMALevelS* d = &DMALevel[id - SCU_GSREG_D0MD];
 
-	 ret = (d.Indirect << 24) | (d.ReadUpdate << 16) | (d.WriteUpdate << 8) | (d.SF << 0);
+	 ret = (d->Indirect << 24) | (d->ReadUpdate << 16) | (d->WriteUpdate << 8) | (d->SF << 0);
 	}
 	break;
   //

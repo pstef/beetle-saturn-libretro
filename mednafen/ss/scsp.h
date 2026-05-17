@@ -19,7 +19,7 @@
 ** 51 Franklin Street, Fifth Floor, Boston, MA  02110-1301, USA.
 */
 
-#include <mednafen/state.h>
+#include "../state.h"
 
 /* Phase-9a: class -> struct.  Members formerly under `private:`
  * are now (implicitly) public, preparing for eventual C
@@ -59,14 +59,22 @@ enum
 
 /* C-compat typedefs: in C the struct tag is not auto-aliased to a
  * type name, so a plain `SS_SCSP*` parameter at file scope fails to
- * parse without an explicit typedef.  Forward-declare all four
+ * parse without an explicit typedef.  Forward-declare all five
  * tag-to-typename aliases up front so the struct bodies below can
  * reference each other and the function decls further down can
  * spell `SS_SCSP*` directly. */
 typedef struct SS_SCSP_Slot    SS_SCSP_Slot;
+typedef struct SS_SCSP_Timer   SS_SCSP_Timer;
 typedef struct SS_SCSP_DSPStep SS_SCSP_DSPStep;
 typedef struct SS_SCSP_DSPS    SS_SCSP_DSPS;
 typedef struct SS_SCSP         SS_SCSP;
+
+/* Was an in-class const member with default initializer (C++11 only);
+ * hoisted to file scope so scsp.h parses as C too.  Const + static
+ * means each TU gets its own copy that LTO folds away. */
+static const uint16_t SS_SCSP_SB_XOR_Table[4] = {
+ 0x0000, 0x7FFF, 0x8000, 0xFFFF
+};
 
 struct SS_SCSP_Slot
 {
@@ -242,6 +250,20 @@ struct SS_SCSP_DSPS
  bool MPROG_Dirty;
 };
 
+/* SS_SCSP_Timer -- file-scope so the SS_SCSP_Timer typedef at the
+ * top of this header resolves to the same type the SS_SCSP::Timers[3]
+ * field is declared with.  Defining the struct inline inside SS_SCSP
+ * (as it used to be -- anonymous, then briefly named-but-nested)
+ * would create the nested type `SS_SCSP::SS_SCSP_Timer` in C++,
+ * which is a distinct type from the file-scope forward-declared
+ * `struct SS_SCSP_Timer` -- breaking pointer assignments. */
+struct SS_SCSP_Timer
+{
+ uint8_t Control;
+ uint8_t Counter;
+ int32_t Reload;
+};
+
 struct SS_SCSP
 {
  /* Phase-8f: RunSample's `template<typename T_out = int16_t>` form
@@ -283,8 +305,6 @@ struct SS_SCSP
  uint32_t LFSR;
  uint32_t GlobalCounter;
 
- const uint16_t SB_XOR_Table[4] = { 0x0000, 0x7FFF, 0x8000, 0xFFFF };
-
  //
  //
  struct
@@ -313,12 +333,7 @@ struct SS_SCSP
  uint8_t SCILV[3];
  //
  //
- struct
- {
-  uint8_t Control;
-  uint8_t Counter;
-  int32_t Reload;
- } Timers[3];
+ SS_SCSP_Timer Timers[3];
  //
  //
  // DMEA, DRGA, and DTLG are apparently not altered by executing DMA.
@@ -334,7 +349,6 @@ struct SS_SCSP
  //
  uint8_t RBP;
  uint8_t RBL;
-
 
  // Carried-state write bitmask, plus the one read-side bit the liveness pass needs.
 

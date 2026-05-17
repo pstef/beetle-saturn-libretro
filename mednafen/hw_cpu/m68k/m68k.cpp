@@ -44,7 +44,7 @@
 	CMPM (a7)+,(a7)+
 */
 
-#include <mednafen/mednafen.h>
+#include "../../mednafen.h"
 #include "m68k.h"
 
 #include <tuple>
@@ -57,23 +57,78 @@
 
 static MDFN_FASTCALL void Dummy_BusRESET(bool state) { }
 
-M68K::M68K(const bool rev_e) : Revision_E(rev_e),
-	       BusReadInstr(nullptr), BusRead8(nullptr), BusRead16(nullptr),
-	       BusWrite8(nullptr), BusWrite16(nullptr),
-	       BusRMW(nullptr),
-	       BusIntAck(nullptr),
-	       BusRESET(Dummy_BusRESET)
+/* All M68K_* free-function wrappers exposed by m68k.h live in this
+ * `extern "C" { ... }` block so the symbol names are C-mangled
+ * (i.e. unmangled).  Required because m68k.h's declarations are
+ * also wrapped in `extern "C"` for C-consumer compatibility --
+ * the definition and declaration linkage must match or the linker
+ * gets two different mangled symbols and fails to resolve.
+ *
+ * The bodies are pure thunks: each forwards to the matching
+ * struct M68K member method.  Bodies are in this TU (m68k.cpp)
+ * because they reach Dummy_BusRESET / member methods / sources
+ * not exposed in the public header. */
+extern "C" {
+
+void M68K_Construct(M68K* z, bool rev_e)
 {
- timestamp = 0;
- XPending = 0;
- IPL = 0;
- Reset(true);
+   z->Revision_E   = rev_e;
+
+   z->BusReadInstr = NULL;
+   z->BusRead8     = NULL;
+   z->BusRead16    = NULL;
+   z->BusWrite8    = NULL;
+   z->BusWrite16   = NULL;
+   z->BusRMW       = NULL;
+   z->BusIntAck    = NULL;
+   z->BusRESET     = Dummy_BusRESET;
+
+   z->timestamp    = 0;
+   z->XPending     = 0;
+   z->IPL          = 0;
+
+   z->Reset(true);
 }
 
-M68K::~M68K()
+void     M68K_SetIPL             (M68K* z, uint8_t ipl_new)
 {
+ if(z->IPL < 0x7 && ipl_new == 0x7)
+  z->XPending |= M68K::XPENDING_MASK_NMI;
+ else if(ipl_new < 0x7)
+  z->XPending &= ~M68K::XPENDING_MASK_NMI;
 
+ z->IPL = ipl_new;
+ z->RecalcInt();
 }
+void     M68K_SignalDTACKHalted  (M68K* z, uint32_t addr)               { z->SignalDTACKHalted(addr); }
+void     M68K_SignalAddressError (M68K* z, uint32_t addr, uint8_t type) { z->SignalAddressError(addr, type); }
+void     M68K_Reset              (M68K* z, bool pwr)                    { z->Reset(pwr); }
+void     M68K_Run                (M68K* z, int32_t until)               { z->Run(until); }
+void     M68K_SetExtHalted       (M68K* z, bool state)
+{
+ z->XPending &= ~M68K::XPENDING_MASK_EXTHALTED;
+ if(state)
+  z->XPending |= M68K::XPENDING_MASK_EXTHALTED;
+}
+void     M68K_StateAction        (M68K* z, StateMem* sm, const unsigned load,
+                                  const bool data_only, const char* sname)
+ { z->StateAction(sm, load, data_only, sname); }
+uint32_t M68K_GetRegister        (M68K* z, const unsigned id, char* const special, const uint32_t special_len)
+ { return z->GetRegister(id, special, special_len); }
+void     M68K_SetRegister        (M68K* z, const unsigned id, const uint32_t value)
+ { z->SetRegister(id, value); }
+
+} /* extern "C" */
+
+/* Phase-9 cleanup: M68K::M68K(const bool) and M68K::~M68K() retired.
+ * Zero remaining callers after sound_glue.cpp -> sound_glue.c
+ * (fd5bf98) switched from `static M68K SoundCPU(true);` to a
+ * zero-initialised SoundCPU plus an explicit M68K_Construct call
+ * in SoundGlue_Init().  The ctor body matched M68K_Construct's
+ * body 1:1 (the prep commit 5cafd34's free-function counterpart
+ * for the same work).  The dtor body was empty.  M68K is a pure-
+ * data struct now -- no class methods need calling at end-of-
+ * scope, no class methods need calling at construction. */
 
 void M68K::StateAction(StateMem* sm, const unsigned load, const bool data_only, const char* sname)
 {
@@ -101,24 +156,6 @@ void M68K::StateAction(StateMem* sm, const unsigned load, const bool data_only, 
 
  if(load)
   XPending &= XPENDING_MASK__VALID;
-}
-
-void M68K::SetIPL(uint8_t ipl_new)
-{
- if(IPL < 0x7 && ipl_new == 0x7)
-  XPending |= XPENDING_MASK_NMI;
- else if(ipl_new < 0x7)
-  XPending &= ~XPENDING_MASK_NMI;
-
- IPL = ipl_new;
- RecalcInt();
-}
-
-void M68K::SetExtHalted(bool state)
-{
- XPending &= ~XPENDING_MASK_EXTHALTED;
- if(state)
-  XPending |= XPENDING_MASK_EXTHALTED;
 }
 
 //
